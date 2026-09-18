@@ -370,14 +370,22 @@ def rewrite(query: str, now: Optional[datetime] = None,
         if hint not in normalized:
             vec_query = f"{normalized}（{hint}）"
 
-    # 关键词路：原句 + 中文日期 + 同义词（BM25 靠字面匹配，扩得越全越好）
-    bm25_parts = [normalized]
-    if time_scope and time_scope.get("bm25_text"):
-        text = time_scope["bm25_text"]
-        if text not in normalized:
-            bm25_parts.append(text)
-    bm25_parts.extend(expansions)
-    bm25_query = " ".join(p for p in bm25_parts if p)
+    # 关键词路：原句 + 同义词扩展
+    #
+    # ⚠️ 这里**故意不加**解析出的时间文本（bm25_text），是实测踩坑后的决定：
+    #    中文日期经 bigram 分词后会产生大量年份碎片。以「2026年9月18日」为例，
+    #    会切出 "20" / "02" / "26" / "6年" 等 token，其中 "20"/"02"/"26"
+    #    能匹配**任何** 20xx 年的文档。实测后果：无关查询「今天天气怎么样」
+    #    因为带上了解析出的日期而误命中 doc2（2026-07-24），
+    #    把本该判为"无结果"的查询变成了"有结果"。
+    #
+    #    而它带来的正收益是零：用户若在提问里写了日期（"去年12月19日"），
+    #    原句本身就已包含这些 token，不需要再补一遍。
+    #
+    #    解析出的时间范围仍然有用，只是去处不同：
+    #      · 进 vec_hint（向量路）
+    #      · 进 LLM Prompt 的【时间范围提示】，让模型据此判断日期是否落在区间内
+    bm25_query = " ".join([normalized] + expansions)
 
     result.update({
         "normalized": normalized,

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.config import (
     RAG_ENABLED, EMBED_MODEL_NAME, EMBED_DIM, CHUNK_SIZE, CHUNK_OVERLAP,
     RETRIEVE_TOP_N_VEC, RETRIEVE_TOP_N_BM25, RETRIEVE_TOP_K, RETRIEVE_MIN_SCORE,
+    RETRIEVE_SCORE_MARGIN, RETRIEVE_NO_HIT_SCORE,
     FUSION_MODE, RRF_K, BM25_K1, BM25_B, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL,
     QUERY_REWRITE_ENABLE, MAX_CONTEXT_CHARS, LLM_USE_ENV_PROXY, LLM_TIMEOUT,
     LLM_TEMPERATURE,
@@ -279,6 +280,8 @@ async def get_rag_config():
             "top_n_bm25": RETRIEVE_TOP_N_BM25,
             "top_k": RETRIEVE_TOP_K,
             "min_score": RETRIEVE_MIN_SCORE,
+            "score_margin": RETRIEVE_SCORE_MARGIN,
+            "no_hit_score": RETRIEVE_NO_HIT_SCORE,
             "fusion_mode": FUSION_MODE,
             "rrf_k": RRF_K,
             "bm25_k1": BM25_K1,

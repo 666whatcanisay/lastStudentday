@@ -23,7 +23,8 @@ from sqlalchemy.orm import Session
 
 from app.config import (
     RETRIEVE_TOP_N_VEC, RETRIEVE_TOP_N_BM25, RETRIEVE_TOP_K,
-    RETRIEVE_MIN_SCORE, FUSION_MODE, MAX_CONTEXT_CHARS, LLM_MAX_TOKENS,
+    RETRIEVE_MIN_SCORE, RETRIEVE_SCORE_MARGIN, RETRIEVE_NO_HIT_SCORE,
+    FUSION_MODE, MAX_CONTEXT_CHARS, LLM_MAX_TOKENS,
 )
 from app.models import QaRecord
 from app.services.bm25_index import get_bm25_index
@@ -176,16 +177,23 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
              min_score: Optional[float] = None,
              fusion_mode: Optional[str] = None,
              vec_query: Optional[str] = None,
-             bm25_query: Optional[str] = None) -> Dict:
+             bm25_query: Optional[str] = None,
+             score_margin: Optional[float] = None,
+             no_hit_score: Optional[float] = None) -> Dict:
     """
     检索入口：双路并行检索 → 分数融合 → 去重 → 阈值截断。
 
     参数:
-      mode        — "vec" 仅向量 / "bm25" 仅关键词 / "hybrid" 双路融合
-      top_k       — 最终返回条数，默认取配置 RETRIEVE_TOP_K
-      doc_ids     — 限定检索的文档范围
-      min_score   — 向量相似度阈值，默认取配置 RETRIEVE_MIN_SCORE
-      fusion_mode — 融合策略 "rrf" / "weighted"，默认取配置 FUSION_MODE
+      mode         — "vec" 仅向量 / "bm25" 仅关键词 / "hybrid" 双路融合
+      top_k        — 最终返回条数，默认取配置 RETRIEVE_TOP_K
+      doc_ids      — 限定检索的文档范围
+      min_score    — 向量相似度**噪声下限**，默认取配置 RETRIEVE_MIN_SCORE
+      fusion_mode  — 融合策略 "rrf" / "weighted"，默认取配置 FUSION_MODE
+      score_margin — 向量路**相对带宽**，默认取配置 RETRIEVE_SCORE_MARGIN。
+                     实际截断线 = max(min_score, top1 - score_margin)。
+                     为什么不能只用绝对阈值：bge-zh 相似度是长度相关的，
+                     短查询 top1 只有 0.34 而长查询有 0.64，单一死线要么
+                     掐断短查询、要么放过长查询的噪声。详见 config.py 注释。
       vec_query   — 向量路的实际查询串（默认与 query 相同）。
                     由 query_rewrite 提供，见该模块「分路投喂」的设计说明。
       bm25_query  — 关键词路的实际查询串（默认与 query 相同），通常带同义扩展。
@@ -203,6 +211,8 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
     """
     top_k = top_k or RETRIEVE_TOP_K
     min_score = RETRIEVE_MIN_SCORE if min_score is None else min_score
+    score_margin = RETRIEVE_SCORE_MARGIN if score_margin is None else score_margin
+    no_hit_score = RETRIEVE_NO_HIT_SCORE if no_hit_score is None else no_hit_score
     fusion_mode = fusion_mode or FUSION_MODE
 
     # 分路查询：未显式提供时退回同一句（保持与阶段二 /search 接口的行为兼容）
@@ -221,12 +231,21 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
             qv = model.encode_one(vec_query, is_query=True)
             if qv is not None:
                 vec_hits = search_vector(db, qv, top_n=RETRIEVE_TOP_N_VEC, doc_ids=doc_ids)
-                # 阈值截断：低于阈值的向量命中在融合前丢弃
-                # （bge-zh 相似度区间较窄，阈值需按语料实测调整，见 config.py 说明）
-                before = len(vec_hits)
-                vec_hits = [h for h in vec_hits if h["score"] >= min_score]
-                if before != len(vec_hits):
-                    logger.info(f"向量路阈值截断({min_score}): {before} → {len(vec_hits)} 条")
+
+                # 两级过滤：绝对噪声下限 + 相对 top1 带宽
+                #   截断线 = max(min_score, top1 - score_margin)
+                # 相对项让过滤强度自适应：长查询 top1 高 → 带宽收紧、切掉噪声；
+                # 短口语查询 top1 低 → 带宽放宽、保住候选。
+                if vec_hits:
+                    top1 = vec_hits[0]["score"]
+                    cutoff = max(min_score, top1 - score_margin)
+                    before = len(vec_hits)
+                    vec_hits = [h for h in vec_hits if h["score"] >= cutoff]
+                    if before != len(vec_hits):
+                        logger.info(
+                            f"向量路截断(top1={top1:.4f}, 带宽={score_margin}, "
+                            f"实际线={cutoff:.4f}): {before} → {len(vec_hits)} 条"
+                        )
         else:
             degraded = True
             degrade_reason = "vector_model_unavailable"
@@ -248,8 +267,22 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
         else:
             fused = fuse(vec_hits, bm25_hits, mode=fusion_mode)
 
+    # ---------- 无结果判定 ----------
+    # 判定权交给关键词路（它有真实判别力），向量路只做高置信度兜底。
+    # 原因见 config.py 的长注释：本语料上向量分无法区分相关/无关。
+    #
+    # ⚠️ 只在 hybrid（生产链路）上启用这个门控。
+    #    单路模式（vec / bm25）是诊断视图，本就用于观察"这一路召回了什么"，
+    #    不应替用户下"没有结果"的结论 —— 尤其 vec 单路缺少 BM25 的判别力，
+    #    套用门控会把「从哪到哪」(0.3787) 这类相关的短查询误判成无结果。
+    vec_top1 = vec_hits[0]["score"] if vec_hits else 0.0
+    if mode == "hybrid":
+        no_hit = (len(bm25_hits) == 0) and (vec_top1 < no_hit_score)
+    else:
+        no_hit = len(fused) == 0
+
     # ---------- 去重与截断 ----------
-    final = _dedup(fused)[:top_k]
+    final = [] if no_hit else _dedup(fused)[:top_k]
 
     # ---------- 补充展示字段 ----------
     for h in final:
@@ -262,6 +295,9 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
         "vec_count": len(vec_hits),
         "bm25_count": len(bm25_hits),
         "min_score": min_score,
+        "score_margin": score_margin,
+        "vec_top1": round(vec_top1, 4),
+        "no_hit": no_hit,
         "degraded": degraded,
         "degrade_reason": degrade_reason,
     }
@@ -380,6 +416,9 @@ def ask(db: Session, question: str, mode: str = "hybrid",
             "bm25_count": ret["bm25_count"],
             "hit_count": len(hits),
             "min_score": ret["min_score"],
+            "score_margin": ret["score_margin"],
+            "vec_top1": ret["vec_top1"],
+            "no_hit": ret["no_hit"],
             "degraded": ret["degraded"],
             "degrade_reason": ret["degrade_reason"],
         },
