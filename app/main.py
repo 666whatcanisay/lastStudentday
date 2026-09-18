@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import APP_NAME, APP_VERSION, STATIC_DIR
 from app.database import init_database
-from app.routers import file, ocr, document
+from app.routers import file, ocr, document, rag
 
 # ==================== 日志配置 ====================
 logging.basicConfig(
@@ -66,6 +66,17 @@ async def startup_event():
     get_ocr_engine()
     info = get_engine_info()
     logger.info(f"OCR引擎: {info['name']}")
+
+    # 预热 RAG 向量模型（失败不阻断启动，检索自动降级为 BM25 单路）
+    from app.config import RAG_ENABLED
+    if RAG_ENABLED:
+        from app.services.embedding import get_embedding_model
+        emb = get_embedding_model()
+        if emb.load():
+            logger.info(f"RAG向量模型: {emb.get_info()['name']} ({emb.dim}维)")
+        else:
+            logger.warning("RAG向量模型加载失败，检索将降级为 BM25 单路（功能仍可用）")
+
     logger.info("=== 系统启动完成 ===")
 
 
@@ -73,6 +84,7 @@ async def startup_event():
 app.include_router(file.router)
 app.include_router(ocr.router)
 app.include_router(document.router)
+app.include_router(rag.router)
 
 
 # ==================== 健康检查 ====================

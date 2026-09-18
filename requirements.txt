@@ -33,3 +33,18 @@ openpyxl==3.1.5
 
 # RapidOCR 运行时依赖（--no-deps 安装时需单独装）
 six>=1.16.0
+
+# ==================== RAG 检索增强生成 ====================
+# 向量模型分词器（bge-small-zh 使用）。Rust 扩展，不依赖 torch
+tokenizers==0.23.2
+# LLM 调用（OpenAI 兼容协议）。注：uvicorn[standard] 通常已带入，此处显式声明版本
+httpx==0.28.1
+
+# 说明：
+#   - 向量计算复用已有的 numpy，无需新增
+#   - ONNX 推理复用已有的 onnxruntime，无需新增
+#   - BM25 关键词检索为项目内自研实现（app/services/bm25_index.py），零依赖
+#   - 向量模型需单独下载（约 23MB，INT8 量化版），走国内镜像：
+#       set HF_ENDPOINT=https://hf-mirror.com
+#     模型来自 Xenova/bge-small-zh-v1.5 的 onnx/model_int8.onnx
+#     （官方 BAAI/bge-small-zh-v1.5 仓库只有 PyTorch 格式，无 ONNX）
