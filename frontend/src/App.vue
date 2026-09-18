@@ -219,4 +219,18 @@ onMounted(() => {
 
 /* ========== 引擎信息 ========== */
 .engine-tech h4 { margin-bottom: 12px; }
+
+/* ========== 窄屏 ==========
+   实测 700px 宽时顶栏标题会折成两行，把右侧标签挤变形。
+   标题必须单行截断，次要的版本标签直接让位。 */
+@media (max-width: 900px) {
+  .header-left { min-width: 0; }
+  .header-title {
+    font-size: 15px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .version-tag { display: none; }
+}
 </style>

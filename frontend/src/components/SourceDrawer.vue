@@ -23,7 +23,7 @@
           <span class="sh-index">[{{ refItem?.index }}]</span>
           <span class="sh-name">{{ refItem?.file_name }}</span>
           <el-tag v-if="refItem?.page_no" size="small" type="info" effect="plain">第{{ refItem.page_no }}页</el-tag>
-          <el-tag v-if="refItem && !refItem.cited" size="small" type="info" effect="plain">未被引用</el-tag>
+          <el-tag v-if="refItem && !refItem.cited && showCited" size="small" type="info" effect="plain">未被引用</el-tag>
         </div>
         <div class="sh-right">
           <el-button-group>
@@ -79,6 +79,8 @@ const props = defineProps({
   refItem: { type: Object, default: null },
   hasPrev: { type: Boolean, default: false },
   hasNext: { type: Boolean, default: false },
+  /** 降级场景下 cited 全为 false 属「无判定者」，不该标成「未被引用」 */
+  showCited: { type: Boolean, default: true },
 })
 const emit = defineEmits(['update:modelValue', 'prev', 'next'])
 

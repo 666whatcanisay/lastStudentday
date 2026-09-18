@@ -187,8 +187,8 @@
                     >{{ p.n }}</sup>
                   </template>
                 </div>
-                <div v-else-if="!m.result.answer_text" class="ans-text ans-fallback">
-                  本次未生成回答。
+                <div v-else class="ans-text ans-fallback">
+                  本次未生成回答（降级为仅检索模式，见上方说明）。
                 </div>
 
                 <!-- 引用区 -->
@@ -272,6 +272,7 @@
     <SourceDrawer
       v-model="drawerVisible"
       :ref-item="drawerRef"
+      :show-cited="drawerShowCited"
       :has-prev="drawerIdx > 0"
       :has-next="drawerIdx >= 0 && drawerIdx < drawerList.length - 1"
       @prev="stepRef(-1)"
@@ -333,6 +334,8 @@ const drawerVisible = ref(false)
 const drawerRef = ref(null)
 const drawerList = ref([])
 const drawerIdx = ref(-1)
+/** 当前浏览的这批引用是否属于降级回答（降级时不该标「未被引用」） */
+const drawerShowCited = ref(true)
 
 // ==================== 阶段推测提示 ====================
 // 后端未做 SSE，这里按经验时长推进阶段文案。
@@ -534,6 +537,7 @@ function openDrawer(msg, refItem) {
   drawerList.value = list
   drawerIdx.value = list.findIndex((x) => x.chunk_id === refItem.chunk_id)
   drawerRef.value = refItem
+  drawerShowCited.value = !msg?.result?.degraded
   drawerVisible.value = true
 }
 function stepRef(delta) {
@@ -820,5 +824,27 @@ defineExpose({ refresh: () => { loadConfig(); loadIndexStatus(); loadDocOptions(
   font-size: 11px;
   color: #c0c4cc;
   background: #fff;
+}
+
+/* ============ 窄屏适配 ============
+   这是桌面 B/S 系统，窄屏只做降级处理，不做完整移动端适配。
+   刻意**不隐藏**「检索过程」侧栏 —— 它是这套系统的核心卖点，
+   窄屏下宁可改成上下堆叠，也不该把可解释性藏起来。
+   （原计划写的是「折叠为顶部抽屉」，实际做下来堆叠更简单且信息不丢，
+     这里按实际实现修正。） */
+@media (max-width: 1199px) {
+  .qa-trace { width: 264px; }
+}
+@media (max-width: 767px) {
+  .qa-wrap { flex-direction: column; }
+  .qa-main { min-height: 0; }
+  .qa-trace {
+    width: 100%;
+    height: 240px;
+    flex-shrink: 0;
+  }
+  .trace-panel { border-left: none; border-top: 1px solid #e4e7ed; }
+  .qs-item > label { width: 100%; }
+  .msg-bubble { max-width: calc(100% - 50px); }
 }
 </style>
