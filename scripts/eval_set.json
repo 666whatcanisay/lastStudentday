@@ -1,0 +1,163 @@
+{
+  "_note": "RAG 检索评估集。expected_doc_ids 为空数组 = 负样本（语料中确无相关内容，系统应判为无结果）。",
+  "_usage": "由 scripts/eval_rag.py 读取。新增语料后请同步扩充本文件。",
+  "_corpus_snapshot": "5 篇文档 / 去重后 4 篇不同内容：id1 test_invoice.png（电子发票 INV-20240115-001）、id2 test_new.png（采购订单 PO-20260724-888）、id3+id4 test_422.png（重复件，测试422错误排查）、id5 曹操出行打车发票.pdf（真实件，¥25.99）",
+  "_caveat": "⚠️ 当前语料仅 4 篇不同内容，Recall@5 的区分度很弱（top-5 接近全集）。本评估集的首要价值是【建立可重跑的度量框架】与【暴露标签分歧】，调参结论需等语料扩充后重跑。",
+
+  "queries": [
+    {
+      "id": 1,
+      "category": "keyword",
+      "query": "INV-20240115-001 的价税合计是多少",
+      "expected_doc_ids": [1],
+      "note": "单据编号精确匹配，BM25 应直接命中"
+    },
+    {
+      "id": 2,
+      "category": "keyword",
+      "query": "PO-20260724-888 的订单金额",
+      "expected_doc_ids": [2],
+      "note": "订单号精确匹配"
+    },
+    {
+      "id": 3,
+      "category": "keyword",
+      "query": "发票号码 25447000001712590935",
+      "expected_doc_ids": [5],
+      "note": "20 位长数字串，考验分词"
+    },
+    {
+      "id": 4,
+      "category": "keyword",
+      "query": "这张发票的开票人是谁",
+      "expected_doc_ids": [5],
+      "note": "开票人=钟寒冰，只在真实发票里出现"
+    },
+    {
+      "id": 5,
+      "category": "keyword",
+      "query": "广州优行科技有限公司开具的发票",
+      "expected_doc_ids": [5],
+      "note": "销售方专名"
+    },
+    {
+      "id": 6,
+      "category": "semantic",
+      "query": "买服务器花了多少钱",
+      "expected_doc_ids": [1],
+      "note": "口语化，无「发票/金额」等精确 token"
+    },
+    {
+      "id": 7,
+      "category": "semantic",
+      "query": "打车报销的凭证",
+      "expected_doc_ids": [5],
+      "note": "「打车」「报销」均非原文词，纯语义路应占优"
+    },
+    {
+      "id": 8,
+      "category": "semantic",
+      "query": "采购服务器设备一批的凭证",
+      "expected_doc_ids": [1],
+      "note": "「服务器设备一批」为原文词，语义+关键词均可"
+    },
+    {
+      "id": 9,
+      "category": "semantic",
+      "query": "系统报错排查的记录",
+      "expected_doc_ids": [3, 4],
+      "note": "语料含重复件，命中任一即算对"
+    },
+    {
+      "id": 10,
+      "category": "date",
+      "query": "2024年1月15日的发票",
+      "expected_doc_ids": [1],
+      "note": "中文日期形态，验证日期归一化链路"
+    },
+    {
+      "id": 11,
+      "category": "date",
+      "query": "2025年12月19日的打车发票",
+      "expected_doc_ids": [5],
+      "note": "中文日期 + 语义词混合"
+    },
+    {
+      "id": 12,
+      "category": "date",
+      "query": "2026年7月24日的采购订单",
+      "expected_doc_ids": [2],
+      "note": "中文日期 + 单据类型"
+    },
+    {
+      "id": 13,
+      "category": "amount",
+      "query": "价税合计一万一千三的发票",
+      "expected_doc_ids": [1],
+      "note": "中文数字金额 vs 原文 11,300.00"
+    },
+    {
+      "id": 14,
+      "category": "amount",
+      "query": "金额五万五千元的订单",
+      "expected_doc_ids": [2],
+      "note": "中文数字金额 vs 原文 55,000.00"
+    },
+    {
+      "id": 15,
+      "category": "amount",
+      "query": "25.99 元的发票",
+      "expected_doc_ids": [5],
+      "note": "小数字金额，原文含 ¥25.99"
+    },
+    {
+      "id": 16,
+      "category": "amount",
+      "query": "888 元的记录",
+      "expected_doc_ids": [3, 4],
+      "note": "短数字，易与其他数字混淆"
+    },
+    {
+      "id": 17,
+      "category": "tax",
+      "query": "税率 13% 的那张发票",
+      "expected_doc_ids": [1],
+      "note": "税率字段"
+    },
+    {
+      "id": 18,
+      "category": "tax",
+      "query": "客运服务费的税额是多少",
+      "expected_doc_ids": [5],
+      "note": "项目名称为 OCR 拼接串「*运输服务*客运服务费」"
+    },
+    {
+      "id": 19,
+      "category": "negative",
+      "query": "公司员工的社保缴纳基数是多少",
+      "expected_doc_ids": [],
+      "note": "负样本：应判无结果"
+    },
+    {
+      "id": 20,
+      "category": "negative",
+      "query": "年度绩效考核评分标准",
+      "expected_doc_ids": [],
+      "note": "负样本：应判无结果"
+    },
+    {
+      "id": 21,
+      "category": "negative",
+      "query": "量子芯片的良率数据",
+      "expected_doc_ids": [],
+      "note": "负样本：应判无结果"
+    },
+    {
+      "id": 22,
+      "category": "negative",
+      "query": "明天北京的天气怎么样",
+      "expected_doc_ids": [],
+      "note": "负样本：完全无关，且是典型口语短查询"
+    }
+  ]
+}
