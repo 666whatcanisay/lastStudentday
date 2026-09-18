@@ -192,10 +192,16 @@ onMounted(() => {
   overflow: hidden;
 }
 /* 文档管理页内容可能很长 → 自己滚；问答页自己管内部滚动 → 外层不滚。
-   用显式类名而不是 :has()，避免依赖较新的选择器支持。 */
+   用显式类名而不是 :has()，避免依赖较新的选择器支持。
+   注意 overflow-x:hidden 是必需的：el-row 的栅格用负外边距实现 gutter
+   （gutter=16 → 左右各 -8px），行盒比容器宽 16px；
+   而只写 overflow-y:auto 时 overflow-x 会按规范一并变成 auto，
+   于是页面底部多出一条无意义的横向滚动条。
+   隐藏不会裁掉可见内容 —— 列自身有 8px 内边距，卡片正好对齐容器边缘。 */
 .main-tabs :deep(.pane-scroll) {
   height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 .main-tabs :deep(.pane-fit) {
   height: 100%;
