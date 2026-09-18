@@ -1,0 +1,35 @@
+# 轻量化智能文档OCR+文本信息抽取系统 - Python 依赖
+#
+# ⚠️ Python 版本兼容性说明：
+#   - Python 3.11/3.12 → rapidocr-onnxruntime 可用 1.4.4
+#   - Python 3.13      → rapidocr-onnxruntime 必须 1.2.3（1.3+ 不支持 3.13）
+#   本文件按已验证的 Python 3.13 兼容组合固定版本
+
+# FastAPI 后端框架
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# 数据库 ORM
+sqlalchemy==2.0.36
+
+# OCR 引擎 (PaddleOCR → ONNX → INT8 量化)
+# ⚠️ Python 3.13 只支持到 1.2.3；用 --no-deps 安装避免 opencv 冲突：
+#   pip install --no-deps rapidocr-onnxruntime==1.2.3
+#   pip install onnxruntime pyclipper shapely six protobuf
+rapidocr-onnxruntime==1.2.3
+onnxruntime==1.27.0
+
+# 图像处理
+opencv-python-headless==5.0.0.93
+Pillow>=11.1.0
+numpy>=2.2.1
+
+# PDF 解析
+PyMuPDF==1.25.2
+
+# Excel 导出
+openpyxl==3.1.5
+
+# RapidOCR 运行时依赖（--no-deps 安装时需单独装）
+six>=1.16.0
