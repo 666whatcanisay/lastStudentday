@@ -162,6 +162,45 @@ class BM25Index:
             return 0.0
         return math.log(1.0 + (n - df + 0.5) / (df + 0.5))
 
+    def _idf_full(self, token: str) -> float:
+        """含「语料中不存在的词」的 IDF —— df=0 时按公式自然取到最大值。
+
+        与 `_idf()` 的区别只在对 df=0 的处理：
+          `_idf()`    df=0 → 0.0   —— **打分**用，正确。不存在的词匹配不到任何文档，
+                                        对任何文档都贡献 0 分。
+          `_idf_full()` df=0 → 最大值 —— **归一化**用。词不在语料里说明它极稀有，
+                                        把它当成 0 会让分母严重偏小。
+        混用会造成很隐蔽的错误：一个 13 个词只命中 1 个的查询，用 `_idf()` 算
+        分母只算了那 1 个词，覆盖率接近 1，看起来"完全命中"。
+        """
+        n = len(self._doc_len)
+        df = self._df.get(token, 0)
+        return math.log(1.0 + (n - df + 0.5) / (df + 0.5))
+
+    def query_idf_mass(self, query: str) -> float:
+        """查询各词 IDF 之和（缺失词按最大 IDF 计）。覆盖率的分母。"""
+        if not self._built or not self._doc_len:
+            return 0.0
+        return sum(self._idf_full(t) for t in set(tokenize(query)))
+
+    def coverage(self, query: str) -> float:
+        """BM25 **覆盖率** = top1 分 / 查询 IDF 总量。
+
+        含义：最好的那个文档，满足了这条查询多少比例的"信息需求"。
+        取值范围大致 [0, 2]（>1 来自标识符加权）。
+
+        为什么需要它：**原始 BM25 分不能做阈值**，它随语料规模缩放
+        （idf 依赖 N），换一批语料就失效。而覆盖率是**比值**，天然与语料无关。
+
+        实测（本项目 4 篇语料 / 22 条查询）：负样本最高 0.026，
+        正样本最低 0.082，分离度 3.2 倍；而原始分只有 1.76 倍。
+        """
+        mass = self.query_idf_mass(query)
+        if mass <= 0:
+            return 0.0
+        hits = self.search(query, top_n=1)
+        return (hits[0]["score"] / mass) if hits else 0.0
+
     def search(self, query: str, top_n: int = 20) -> List[Dict]:
         """
         关键词检索。

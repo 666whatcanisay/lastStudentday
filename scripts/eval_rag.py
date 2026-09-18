@@ -114,9 +114,7 @@ def run_one(db, q: Dict, mode: str, top_k: int,
 
     r = retrieve(db, query=q["query"], **kwargs)
 
-    # BM25 的 top1 原始分。retrieve() 不返回它，但它是诊断无结果门控的必需品：
-    # 现行门控要求「bm25 零命中」，只要查询含常见词（公司/金额/日期）就必然命中，
-    # 门控直接被关掉。要判断这是不是结构性问题，必须看到分数有多低。
+    # BM25 的 top1 原始分。retrieve() 不返回它，但它是诊断无结果门控的必需品。
     #
     # ⚠️ 必须用**改写后**的 bm25_query 来测，不能再用原句 —— 生产链路是
     #    rewrite() → 分路投喂，用原句测出来的分数与线上不是同一个东西。
@@ -134,6 +132,9 @@ def run_one(db, q: Dict, mode: str, top_k: int,
         "bm25_count": r["bm25_count"],
         "vec_top1": r["vec_top1"],
         "bm25_top1": bm25_top1,
+        # 直接取 retrieve() 返回的覆盖率，**不在评估脚本里另算一遍** ——
+        # 否则评估用的口径和线上跑的可能悄悄不一致，那评估就白做了。
+        "bm25_coverage": r.get("bm25_coverage", 0.0),
         "degraded": r["degraded"],
     }
 
@@ -173,6 +174,7 @@ def evaluate(db, queries: List[Dict], mode: str, top_k: int,
             "expected": q["expected_doc_ids"], "got": res["doc_ids"],
             "rank": rank, "no_hit": res["no_hit"],
             "vec_top1": res["vec_top1"], "bm25_top1": res["bm25_top1"],
+            "bm25_coverage": res["bm25_coverage"],
             "vec_count": res["vec_count"], "bm25_count": res["bm25_count"],
         })
 
@@ -187,6 +189,7 @@ def evaluate(db, queries: List[Dict], mode: str, top_k: int,
             # vec_top1 是诊断 no_hit_score 是否合理的**唯一直接证据**：
             # 它离阈值多远，决定调阈值是"擦边翻转"还是"有明显余量"。
             "vec_top1": res["vec_top1"], "bm25_top1": res["bm25_top1"],
+            "bm25_coverage": res["bm25_coverage"],
             "vec_count": res["vec_count"], "bm25_count": res["bm25_count"],
         })
 
@@ -269,21 +272,23 @@ def print_verbose(results: List[Dict]):
         print(f"明细 —— 模式 {r['mode']}")
         print("=" * 104)
         print(f"{'#':>3} {'类别':<10}{'期望':<12}{'实际':<22}{'位次':>5}"
-              f"{'vec_top1':>10}{'bm25_top1':>11}{'v/b':>7}  判定  query")
-        print("-" * 112)
+              f"{'vec_top1':>10}{'bm25_t1':>9}{'覆盖':>7}{'v/b':>7}  判定  query")
+        print("-" * 118)
         for d in r["pos_details"]:
             flag = "OK  " if d["rank"] else "MISS"
             counts = f"{d['vec_count']}/{d['bm25_count']}"
             print(f"{d['id']:>3} {d['category']:<10}{str(d['expected']):<12}"
                   f"{str(d['got'])[:20]:<22}{d['rank']:>5}"
-                  f"{d['vec_top1']:>10.4f}{d['bm25_top1']:>11.3f}{counts:>7}"
+                  f"{d['vec_top1']:>10.4f}{d['bm25_top1']:>9.3f}"
+                  f"{d['bm25_coverage']:>7.3f}{counts:>7}"
                   f"  {flag} {d['query']}")
         for d in r["neg_details"]:
             flag = "OK  " if d["judged_no_hit"] else "FP  "
             counts = f"{d['vec_count']}/{d['bm25_count']}"
             print(f"{d['id']:>3} {'negative':<10}{'[]':<12}"
                   f"{str(d['got'])[:20]:<22}{'-':>5}"
-                  f"{d['vec_top1']:>10.4f}{d['bm25_top1']:>11.3f}{counts:>7}"
+                  f"{d['vec_top1']:>10.4f}{d['bm25_top1']:>9.3f}"
+                  f"{d['bm25_coverage']:>7.3f}{counts:>7}"
                   f"  {flag} {d['query']}")
 
 

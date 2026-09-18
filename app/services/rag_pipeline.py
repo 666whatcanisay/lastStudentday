@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.config import (
     RETRIEVE_TOP_N_VEC, RETRIEVE_TOP_N_BM25, RETRIEVE_TOP_K,
     RETRIEVE_MIN_SCORE, RETRIEVE_SCORE_MARGIN, RETRIEVE_NO_HIT_SCORE,
+    RETRIEVE_BM25_COVERAGE_MIN,
     FUSION_MODE, MAX_CONTEXT_CHARS, LLM_MAX_TOKENS,
 )
 from app.models import QaRecord
@@ -196,7 +197,8 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
              vec_query: Optional[str] = None,
              bm25_query: Optional[str] = None,
              score_margin: Optional[float] = None,
-             no_hit_score: Optional[float] = None) -> Dict:
+             no_hit_score: Optional[float] = None,
+             bm25_coverage_min: Optional[float] = None) -> Dict:
     """
     检索入口：双路并行检索 → 分数融合 → 去重 → 阈值截断。
 
@@ -214,6 +216,10 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
       vec_query   — 向量路的实际查询串（默认与 query 相同）。
                     由 query_rewrite 提供，见该模块「分路投喂」的设计说明。
       bm25_query  — 关键词路的实际查询串（默认与 query 相同），通常带同义扩展。
+      no_hit_score       — 无结果判定时向量路的置信度下限，默认取配置。
+      bm25_coverage_min  — 无结果判定时关键词路的**覆盖率**下限，默认取配置。
+                           覆盖率 = bm25_top1 / Σ IDF(查询的每个词)。
+                           用覆盖率而非"零命中"的原因见 config.py 长注释。
 
     返回:
       {
@@ -222,6 +228,9 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
         "fusion_mode": "rrf",
         "vec_count": 12,         # 向量路原始召回数
         "bm25_count": 7,         # 关键词路原始召回数
+        "vec_top1": 0.3958,      # 向量路最高分（诊断用）
+        "bm25_coverage": 0.026,  # 关键词路覆盖率（诊断用）
+        "no_hit": False,         # 是否判定为"检索不到相关内容"
         "degraded": False,       # 是否因模型不可用而降级
         "degrade_reason": None,
       }
@@ -230,6 +239,8 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
     min_score = RETRIEVE_MIN_SCORE if min_score is None else min_score
     score_margin = RETRIEVE_SCORE_MARGIN if score_margin is None else score_margin
     no_hit_score = RETRIEVE_NO_HIT_SCORE if no_hit_score is None else no_hit_score
+    bm25_coverage_min = (RETRIEVE_BM25_COVERAGE_MIN if bm25_coverage_min is None
+                         else bm25_coverage_min)
     fusion_mode = fusion_mode or FUSION_MODE
 
     # 分路查询：未显式提供时退回同一句（保持与阶段二 /search 接口的行为兼容）
@@ -269,9 +280,18 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
             logger.warning("向量模型不可用，本次检索降级为 BM25 单路")
 
     # ---------- 关键词路 ----------
+    # bm25_coverage = top1 分 / 查询 IDF 总量，衡量"最好的文档满足了这条查询
+    # 多少比例的信息需求"。它是**比值**，不像原始分那样随语料规模缩放，
+    # 所以能做阈值。详见 config.RETRIEVE_BM25_COVERAGE_MIN 的长注释。
+    bm25_coverage = 0.0
     if mode in ("bm25", "hybrid"):
         if ensure_bm25_ready(db):
-            bm25_hits = get_bm25_index().search(bm25_query, top_n=RETRIEVE_TOP_N_BM25)
+            idx = get_bm25_index()
+            bm25_hits = idx.search(bm25_query, top_n=RETRIEVE_TOP_N_BM25)
+            if bm25_hits:
+                mass = idx.query_idf_mass(bm25_query)
+                if mass > 0:
+                    bm25_coverage = bm25_hits[0]["score"] / mass
 
     # ---------- 融合 ----------
     if mode == "vec":
@@ -294,7 +314,11 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
     #    套用门控会把「从哪到哪」(0.3787) 这类相关的短查询误判成无结果。
     vec_top1 = vec_hits[0]["score"] if vec_hits else 0.0
     if mode == "hybrid":
-        no_hit = (len(bm25_hits) == 0) and (vec_top1 < no_hit_score)
+        # 关键词路这一侧从「零命中」改成「覆盖率低于下限」。
+        # 零命中是个二元条件，查询含任一常见词就必然有命中，门控直接被关掉；
+        # 覆盖率能表达"命中了，但只满足了很小一部分信息需求"这个中间状态。
+        # 覆盖率天然涵盖零命中（无命中 → 0.0 < 阈值）。
+        no_hit = (bm25_coverage < bm25_coverage_min) and (vec_top1 < no_hit_score)
     else:
         no_hit = len(fused) == 0
 
@@ -314,6 +338,8 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
         "min_score": min_score,
         "score_margin": score_margin,
         "vec_top1": round(vec_top1, 4),
+        "bm25_coverage": round(bm25_coverage, 4),
+        "bm25_coverage_min": bm25_coverage_min,
         "no_hit": no_hit,
         "degraded": degraded,
         "degrade_reason": degrade_reason,
@@ -450,6 +476,8 @@ def ask(db: Session, question: str, mode: str = "hybrid",
             "min_score": ret["min_score"],
             "score_margin": ret["score_margin"],
             "vec_top1": ret["vec_top1"],
+            "bm25_coverage": ret["bm25_coverage"],
+            "bm25_coverage_min": ret["bm25_coverage_min"],
             "no_hit": ret["no_hit"],
             "degraded": ret["degraded"],
             "degrade_reason": ret["degrade_reason"],
