@@ -1,8 +1,9 @@
 {
   "_note": "RAG 检索评估集。expected_doc_ids 为空数组 = 负样本（语料中确无相关内容，系统应判为无结果）。",
   "_usage": "由 scripts/eval_rag.py 读取。新增语料后请同步扩充本文件。",
-  "_corpus_snapshot": "5 篇文档 / 去重后 4 篇不同内容：id1 test_invoice.png（电子发票 INV-20240115-001）、id2 test_new.png（采购订单 PO-20260724-888）、id3+id4 test_422.png（重复件，测试422错误排查）、id5 曹操出行打车发票.pdf（真实件，¥25.99）",
-  "_caveat": "⚠️ 当前语料仅 4 篇不同内容，Recall@5 的区分度很弱（top-5 接近全集）。本评估集的首要价值是【建立可重跑的度量框架】与【暴露标签分歧】，调参结论需等语料扩充后重跑。",
+  "_corpus_snapshot": "27 篇文档 / 26 篇可检索（去重后约 25 篇不同内容）。原有 5 篇：id1 test_invoice.png（电子发票 INV-20240115-001）、id2 test_new.png（采购订单 PO-20260724-888）、id3+id4 test_422.png（重复件）、id5 曹操出行打车发票.pdf（¥25.99）。本轮新增 22 篇（id6~id27），由 scripts/gen_corpus.py 生成、走真实 OCR 链路入库，覆盖服务发票/采购订单/合同/报销单/台账报表五类。",
+  "_caveat": "⚠️ 语料已从 4 篇扩到 25 篇左右，top-5 不再接近全集，Recall@5 开始具备区分度。但 25 篇仍属小语料，且由脚本合成（非真实扫描件），OCR 噪声特征与真实单据不同 —— 结论可用于**方向性判断**，不宜当成生产环境的绝对指标。",
+  "_hard_constraints": "扩充语料时**必须避开**：① 4 个负样本的主题（社保缴纳基数 / 绩效考核 / 量子芯片良率 / 天气）；② 与既有查询冲突的 token（金额 888、25.99、11300、55000；税率 13%；日期 2024年01月15日、2025年12月19日、2026年07月24日；专名 服务器、报错排查、打车、曹操出行、广州优行、钟寒冰）。否则原本唯一的答案会变得不唯一，评估失效。详见 scripts/gen_corpus.py 头部注释。",
 
   "queries": [
     {
@@ -158,6 +159,91 @@
       "query": "明天北京的天气怎么样",
       "expected_doc_ids": [],
       "note": "负样本：完全无关，且是典型口语短查询"
+    },
+
+    {
+      "id": 23,
+      "category": "keyword",
+      "query": "CC-2026-0203 的仓储费是多少",
+      "expected_doc_ids": [8],
+      "note": "新增语料：仓储保管服务费发票，单据编号精确匹配"
+    },
+    {
+      "id": 24,
+      "category": "keyword",
+      "query": "华讯网络设备有限公司签的合同",
+      "expected_doc_ids": [16],
+      "note": "新增语料：网络交换设备采购合同，往来单位专名"
+    },
+    {
+      "id": 25,
+      "category": "keyword",
+      "query": "众力人力资源的劳务外包协议",
+      "expected_doc_ids": [23],
+      "note": "新增语料：劳务外包服务协议"
+    },
+    {
+      "id": 26,
+      "category": "semantic",
+      "query": "员工出差的住宿和车票怎么报销",
+      "expected_doc_ids": [17],
+      "note": "新增语料：差旅费报销单。注意「报销」在多篇报销单里都出现，靠「出差/住宿/车票」区分"
+    },
+    {
+      "id": 27,
+      "category": "semantic",
+      "query": "写字楼的物业管理费",
+      "expected_doc_ids": [9],
+      "note": "新增语料：物业管理服务费发票"
+    },
+    {
+      "id": 28,
+      "category": "semantic",
+      "query": "公司租办公场地的合同",
+      "expected_doc_ids": [21],
+      "note": "新增语料：办公用房租赁合同。「办公场地」非原文词（原文是「办公用房」），考验语义路"
+    },
+    {
+      "id": 29,
+      "category": "semantic",
+      "query": "中央空调找谁做保养",
+      "expected_doc_ids": [22],
+      "note": "新增语料：设备维保服务合同。「保养」非原文词（原文是「维保」）"
+    },
+    {
+      "id": 30,
+      "category": "semantic",
+      "query": "固定资产盘点有没有盘亏",
+      "expected_doc_ids": [24],
+      "note": "新增语料：固定资产盘点表，原文含「盘亏 2 项」"
+    },
+    {
+      "id": 31,
+      "category": "date",
+      "query": "2026年09月的办公用房租赁合同",
+      "expected_doc_ids": [21],
+      "note": "新增语料：中文日期 + 单据类型"
+    },
+    {
+      "id": 32,
+      "category": "date",
+      "query": "2026年11月的项目进度周报",
+      "expected_doc_ids": [26],
+      "note": "新增语料：中文日期 + 报表类型"
+    },
+    {
+      "id": 33,
+      "category": "tax",
+      "query": "税率 9% 的货物运输结算单",
+      "expected_doc_ids": [7],
+      "note": "新增语料：运输服务 9% 税率，与 doc1 的 13% 区分开"
+    },
+    {
+      "id": 34,
+      "category": "tax",
+      "query": "管理咨询服务的结算单税率是多少",
+      "expected_doc_ids": [10],
+      "note": "新增语料：咨询服务 6% 税率"
     }
   ]
 }
