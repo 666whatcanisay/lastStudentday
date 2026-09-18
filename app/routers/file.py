@@ -8,16 +8,27 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from app.config import UPLOAD_DIR, ALLOWED_EXTENSIONS, MAX_FILE_SIZE
+from app.config import (
+    UPLOAD_DIR, ALLOWED_EXTENSIONS, MAX_FILE_SIZE, UPLOAD_CHUNK_SIZE,
+)
 from app.database import get_db
 from app.models import DocumentInfo
 from app.schemas import ApiResponse, UploadResponse
 
 router = APIRouter(prefix="/api/file", tags=["文件上传"])
 logger = logging.getLogger(__name__)
+
+
+def _safe_unlink(path: Path) -> None:
+    """尽力删除半成品文件。删不掉只记日志，不要掩盖真正的错误。"""
+    try:
+        path.unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning(f"清理半成品文件失败: {path} — {e}")
 
 
 @router.post("/upload", response_model=ApiResponse)
@@ -27,6 +38,12 @@ def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
     - 支持 JPG、PNG、BMP 图片、PDF 文件
     - 文件大小校验、格式校验
     - 返回文件存储信息与文档ID
+
+    **内存占用：分块落盘，不把整个文件读进内存。**
+    原实现是 `file.file.read()` 一次性读出全部字节再比大小 —— 50MB 限制形同虚设，
+    超限文件照样先占满 50MB+ 内存。P0-1 把路由改成同步 def 之后请求真正并发，
+    N 个大上传会**叠加**占用内存，所以这里必须改成分块累计 + 超限即中止。
+    （前置拦截见 app/main.py 的 limit_upload_size 中间件。）
     """
     # 1. 文件格式校验
     original_name = file.filename or "unknown"
@@ -37,35 +54,57 @@ def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
             code=400,
         )
 
-    # 2. 读取文件内容并校验大小
-    #    同步读：本路由已改为 def，FastAPI 会把它放进线程池执行，
-    #    这里用 UploadFile.file（底层的 SpooledTemporaryFile）而不是 await file.read()。
-    file_bytes = file.file.read()
-    if len(file_bytes) > MAX_FILE_SIZE:
-        return ApiResponse.error(
-            msg=f"文件大小超过限制({MAX_FILE_SIZE // 1024 // 1024}MB)",
-            code=400,
-        )
-
-    if len(file_bytes) == 0:
-        return ApiResponse.error(msg="文件内容为空，可能已损坏", code=400)
-
-    # 3. 生成唯一文件名并保存
+    # 2. 生成唯一文件名，边读边写边累计字节数
+    #    同步读：本路由是 def，FastAPI 会把它放进线程池执行，
+    #    这里用 UploadFile.file（底层 SpooledTemporaryFile）而不是 await file.read()。
     unique_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{ext}"
     save_path = UPLOAD_DIR / unique_name
 
+    written = 0
+    exceeded = False
     try:
         with open(save_path, "wb") as f:
-            f.write(file_bytes)
-        logger.info(f"文件保存成功: {save_path}")
+            while True:
+                chunk = file.file.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_FILE_SIZE:
+                    # 超限立即中止，不再继续读完剩下的字节
+                    exceeded = True
+                    break
+                f.write(chunk)
     except Exception as e:
+        _safe_unlink(save_path)
         logger.error(f"文件保存失败: {e}")
         return ApiResponse.error(msg=f"文件保存失败: {str(e)}", code=500)
 
-    # 4. 判断文件类型
+    if exceeded:
+        _safe_unlink(save_path)
+        logger.warning(
+            f"上传被拒（超限）: {original_name}，已写入 {written} 字节 "
+            f"> {MAX_FILE_SIZE} 字节，半成品文件已删除"
+        )
+        # 返回真实 413：前端拦截器会优先取 response.data.msg，能正确显示中文提示
+        return JSONResponse(
+            status_code=413,
+            content={
+                "code": 413,
+                "msg": f"文件大小超过限制({MAX_FILE_SIZE // 1024 // 1024}MB)",
+                "data": None,
+            },
+        )
+
+    if written == 0:
+        _safe_unlink(save_path)
+        return ApiResponse.error(msg="文件内容为空，可能已损坏", code=400)
+
+    logger.info(f"文件保存成功: {save_path}（{written} 字节）")
+
+    # 3. 判断文件类型
     file_type = "pdf" if ext == ".pdf" else "image"
 
-    # 5. 写入数据库
+    # 4. 写入数据库
     doc = DocumentInfo(
         file_name=original_name,
         file_path=str(save_path),

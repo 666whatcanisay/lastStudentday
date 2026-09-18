@@ -27,6 +27,11 @@ DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".pdf"}
 # 单文件最大大小 (50MB)
 MAX_FILE_SIZE = 50 * 1024 * 1024
+# 上传接口允许的最大请求体 = 文件本身 + multipart 边界/字段头余量（留 1MB）
+# 用途：在**读 body 之前**按 Content-Length 前置拒绝超大请求（见 app/main.py 的中间件）
+MAX_UPLOAD_BODY_SIZE = MAX_FILE_SIZE + 1024 * 1024
+# 上传落盘的分块大小（1MB）。分块写 = 不会把整个文件读进内存
+UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 # ==================== OCR 配置 ====================
 # OCR 引擎类型: rapidocr / tesseract

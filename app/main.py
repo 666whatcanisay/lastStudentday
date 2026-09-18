@@ -14,7 +14,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import APP_NAME, APP_VERSION, STATIC_DIR
+from app.config import (
+    APP_NAME, APP_VERSION, STATIC_DIR, MAX_FILE_SIZE, MAX_UPLOAD_BODY_SIZE,
+)
 from app.database import init_database
 from app.routers import file, ocr, document, rag
 
@@ -41,6 +43,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ==================== 上传体积前置拦截 ====================
+# 为什么需要它：Starlette 解析 multipart 时**整个请求体已经先收完**
+# （超过 1MB 的部分会落到临时文件）。等进到路由函数再校验大小，
+# 磁盘和带宽早就被消耗掉了 —— 超大请求仍能把服务拖垮。
+# 这里在读 body 之前只看 Content-Length，超限直接 413 返回。
+#
+# ⚠️ 两层缺一不可：Content-Length 缺失（chunked 传输）时这里拦不住，
+# 路由内的分块累计校验（app/routers/file.py）是兜底。
+#
+# 说明：中间件体是纯头部判断 + await call_next，不含同步阻塞调用，
+# 不会重新引入 P0-1 的队头阻塞问题。
+@app.middleware("http")
+async def limit_upload_size(request: Request, call_next):
+    if request.url.path == "/api/file/upload":
+        raw = request.headers.get("content-length")
+        if raw and raw.isdigit() and int(raw) > MAX_UPLOAD_BODY_SIZE:
+            logger.warning(
+                f"上传前置拦截: Content-Length={raw} 超过上限 {MAX_UPLOAD_BODY_SIZE}"
+            )
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "code": 413,
+                    "msg": f"文件大小超过限制({MAX_FILE_SIZE // 1024 // 1024}MB)",
+                    "data": None,
+                },
+            )
+    return await call_next(request)
 
 
 # ==================== 全局异常捕获 ====================
