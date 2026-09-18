@@ -90,3 +90,65 @@ export function deleteDocument(docId) {
 export function getHealth() {
     return http.get('/health')
 }
+
+// ==================== RAG 检索增强生成 ====================
+
+/** RAG 配置与可用性（向量模型是否就绪、LLM 是否已配置） */
+export function getRagConfig() {
+    return http.get('/rag/config')
+}
+
+/** 索引状态（已索引/待索引/失败文档数、分块数） */
+export function getRagIndexStatus() {
+    return http.get('/rag/index/status')
+}
+
+/** 重建索引（不传 doc_ids 则全量） */
+export function rebuildRagIndex(docIds) {
+    return http.post('/rag/index', { doc_ids: docIds || null })
+}
+
+/** 重试未索引与索引失败的文档 */
+export function retryRagIndex() {
+    return http.post('/rag/index/retry')
+}
+
+/**
+ * 纯检索（不调用 LLM）
+ * 用于「检索模式对比」：同一查询分别用 vec / bm25 / hybrid 看效果差异
+ */
+export function ragSearch(params) {
+    return http.post('/rag/search', {
+        query: params.query,
+        mode: params.mode || 'hybrid',
+        top_k: params.topK ?? null,
+        doc_ids: params.docIds ?? null,
+        rewrite: params.rewrite !== false,
+    })
+}
+
+/** 仅做查询改写（不检索），用于展示「系统把你的问题理解成了什么」 */
+export function ragRewrite(query) {
+    return http.post('/rag/rewrite', { query })
+}
+
+/**
+ * 智能问答（完整链路：指代消解 → 查询改写 → 双路检索 → 融合 → LLM 生成 → 引用溯源）
+ *
+ * 单独设 60s 超时：这个接口要等云端 LLM 生成，
+ * 全局的 30s 在长回答时可能不够。
+ */
+export function ragAsk(params) {
+    return http.post(
+        '/rag/ask',
+        {
+            question: params.question,
+            mode: params.mode || 'hybrid',
+            top_k: params.topK ?? null,
+            doc_ids: params.docIds ?? null,
+            rewrite: params.rewrite !== false,
+            history: params.history ?? null,
+        },
+        { timeout: 60000 }
+    )
+}
