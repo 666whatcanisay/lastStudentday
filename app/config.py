@@ -66,3 +66,93 @@ AMOUNT_PATTERNS = [
     r'[￥¥$]\s*([0-9,]+\.?\d*)',
     r'\b([0-9]{1,3}(?:,[0-9]{3})*\.\d{2})\s*元?\b',  # 1,234.56元
 ]
+
+# ==================== RAG 检索增强生成配置 ====================
+# 开关：关闭后 RAG 相关接口直接返回不可用，不影响原有 OCR 链路
+RAG_ENABLED = True
+
+# ---------- 向量模型 ----------
+# 本地 ONNX 向量模型（与项目 RapidOCR 的 ONNX 技术栈一致）
+EMBED_MODEL_NAME = "BAAI/bge-small-zh-v1.5"
+EMBED_MODEL_DIR = MODEL_DIR / "bge-small-zh-v1.5"
+EMBED_DIM = 512                     # bge-small-zh-v1.5 输出维度
+# 模型下载镜像：本机实测 huggingface.co 不可达（返回 000），必须走 hf-mirror.com
+HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
+
+# ---------- OCR 文本归一化 ----------
+NORMALIZE_ENABLE = True
+# OCR 常见错字纠正表（可持续补充，这是领域知识沉淀点）
+OCR_TYPO_MAP = {
+    "税奔": "税务",       # 实测出现：国家税奔总局
+    "圆": "元",           # 发票大写金额单位规范：贰拾伍圆 → 贰拾伍元
+}
+# 是否移除数字内部误插入的空格（实测出现 31. 30 / ¥25. 23）
+NORMALIZE_DIGIT_SPACE = True
+
+# ---------- 文本分块 ----------
+CHUNK_SIZE = 400        # 目标块长度（字符）
+CHUNK_OVERLAP = 50      # 相邻块重叠字符数，避免答案被切断在块边界
+CHUNK_MIN_LEN = 20      # 低于此长度不单独成块
+CHUNK_PAIR_GAP = 3      # 标签-值配对时向下搜索的最大行数
+
+# ---------- 双路检索 ----------
+RETRIEVE_TOP_N_VEC = 20      # 向量路召回条数
+RETRIEVE_TOP_N_BM25 = 20     # 关键词路召回条数
+RETRIEVE_TOP_K = 5           # 融合后最终送入 Prompt 的条数
+RETRIEVE_MIN_SCORE = 0.30    # 向量相似度阈值，低于此值丢弃
+
+# ---------- 分数融合 ----------
+FUSION_MODE = "rrf"          # rrf（默认，鲁棒） / weighted（加权归一化，便于对比调优）
+RRF_K = 60                   # RRF 平滑常数
+FUSION_WEIGHT_VEC = 0.5      # weighted 模式下的向量权重
+FUSION_WEIGHT_BM25 = 0.5     # weighted 模式下的关键词权重
+
+# ---------- BM25 参数 ----------
+BM25_K1 = 1.5
+BM25_B = 0.75
+
+# ---------- 查询改写 ----------
+QUERY_REWRITE_ENABLE = True
+QUERY_REWRITE_MODE = "auto"  # auto: 有 LLM Key 用 LLM 改写，否则用规则表兜底
+
+# ---------- Prompt 上下文预算 ----------
+MAX_CONTEXT_CHARS = 3000     # 送入 Prompt 的召回内容总字符上限
+
+# ---------- 云端 LLM（OpenAI 兼容协议，换厂商只改 base_url 与 model） ----------
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
+LLM_TIMEOUT = 60
+
+
+def load_dotenv_if_exists():
+    """
+    加载项目根目录下的 .env 文件（若存在）。
+
+    用于把 LLM_API_KEY 等敏感配置从环境变量注入，避免写入代码或提交到仓库。
+    不引入 python-dotenv 依赖，仅支持 KEY=VALUE 的简单格式。
+    """
+    env_file = BASE_DIR / ".env"
+    if not env_file.exists():
+        return
+    try:
+        with open(env_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key, value = key.strip(), value.strip().strip('"').strip("'")
+                # 已存在的环境变量优先，不被 .env 覆盖
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        pass
+
+
+load_dotenv_if_exists()
+
+# .env 加载后再读取一次，使 .env 中的配置生效
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", LLM_BASE_URL)
+LLM_API_KEY = os.getenv("LLM_API_KEY", LLM_API_KEY)
+LLM_MODEL = os.getenv("LLM_MODEL", LLM_MODEL)
