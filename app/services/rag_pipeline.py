@@ -31,6 +31,7 @@ from app.services.bm25_index import get_bm25_index
 from app.services.embedding import get_embedding_model
 from app.services.fusion import fuse
 from app.services.llm_client import get_llm_client
+from app.services.query_rewrite import resolve_coreference
 from app.services.query_rewrite import rewrite as rewrite_query
 from app.services.rag_indexer import ensure_bm25_ready
 from app.services.vector_store import search_vector
@@ -70,8 +71,9 @@ SYSTEM_PROMPT = """你是严谨的文档信息抽取助手。你的唯一信息�
 
 
 def _build_user_prompt(question: str, hits: List[Dict],
-                       time_scope: Optional[Dict] = None) -> str:
-    """组装用户消息：资料片段 + 问题 + （可选）时间解析提示"""
+                       time_scope: Optional[Dict] = None,
+                       coref: Optional[Dict] = None) -> str:
+    """组装用户消息：资料片段 + 问题 + （可选）指代消解/时间解析提示"""
     blocks = []
     for i, h in enumerate(hits, 1):
         src = h.get("file_name") or f"文档{h.get('doc_id')}"
@@ -80,6 +82,21 @@ def _build_user_prompt(question: str, hits: List[Dict],
         blocks.append(f"[{i}] 来源：{loc}\n{h.get('chunk_text') or ''}")
 
     parts = ["【资料片段】", "\n\n".join(blocks), "", "【用户问题】", question]
+
+    # 多轮指代提示：告诉模型「它 / 这张发票」指的是哪份文档。
+    # 用原问题提问（保留用户真实措辞），但把指代关系显式说清楚，
+    # 比直接把问题替换掉更稳 —— 模型既知道用户原话，也知道指向。
+    if coref and coref.get("changed"):
+        focus = coref.get("focus") or {}
+        pronoun = coref.get("pronoun")
+        if pronoun:
+            desc = f"本轮问题中的「{pronoun}」指代文档：{focus.get('file_name') or ''}"
+        else:
+            desc = f"本轮问题是承接上一轮的省略式追问，所指文档为：{focus.get('file_name') or ''}"
+        if focus.get("anchor"):
+            desc += f"（唯一标识：{focus['anchor']}）"
+        parts.append("")
+        parts.append(f"【指代提示】{desc}。请按此理解作答。")
 
     if time_scope:
         parts.append("")
@@ -371,9 +388,15 @@ def ask(db: Session, question: str, mode: str = "hybrid",
         min_score: Optional[float] = None,
         fusion_mode: Optional[str] = None,
         rewrite_enable: bool = True,
-        use_llm_rewrite: bool = False) -> Dict:
+        use_llm_rewrite: bool = False,
+        history: Optional[List[Dict]] = None) -> Dict:
     """
-    问答主入口：改写 → 双路检索 → 融合 → 去重 → 裁剪 → 防幻觉 Prompt → 生成 → 引用溯源。
+    问答主入口：指代消解 → 查询改写 → 双路检索 → 融合 → 去重 → 裁剪
+                → 防幻觉 Prompt → 生成 → 引用溯源。
+
+    多轮：history 由前端随请求带来（后端无状态），格式
+          [{"question":..,"answer":..,"top_doc_id":..,"top_file_name":..,
+            "top_chunk_text":..}, ...]
 
     降级行为（三条出口，任何一条都不抛异常）：
       1. 检索为空            → 不调 LLM，直接返回 NO_HIT_TEXT
@@ -395,8 +418,16 @@ def ask(db: Session, question: str, mode: str = "hybrid",
     """
     started = time.time()
 
+    # ---------- 0. 多轮指代消解（仅在有历史时生效） ----------
+    coref = resolve_coreference(
+        question, history,
+        use_llm=use_llm_rewrite,
+        llm_client=get_llm_client() if use_llm_rewrite else None,
+    )
+    search_question = coref["resolved"] if coref["changed"] else question
+
     # ---------- 1. 查询改写 ----------
-    rw = rewrite_query(question, enable=rewrite_enable, use_llm=use_llm_rewrite,
+    rw = rewrite_query(search_question, enable=rewrite_enable, use_llm=use_llm_rewrite,
                        llm_client=get_llm_client() if use_llm_rewrite else None)
 
     # ---------- 2. 检索 ----------
@@ -408,6 +439,7 @@ def ask(db: Session, question: str, mode: str = "hybrid",
     hits = ret["hits"]
 
     base = {
+        "coreference": coref,
         "rewrite": rw,
         "retrieval": {
             "mode": ret["mode"],
@@ -427,7 +459,7 @@ def ask(db: Session, question: str, mode: str = "hybrid",
     # ---------- 出口 1：检索为空，不浪费一次 LLM 调用 ----------
     if not hits:
         latency_ms = (time.time() - started) * 1000
-        _save_qa_record(db, question, rw["bm25_query"], None, [], ret["fusion_mode"], None, latency_ms)
+        _save_qa_record(db, question, search_question, None, [], ret["fusion_mode"], None, latency_ms)
         return {
             **base,
             "answer": None,
@@ -442,13 +474,13 @@ def ask(db: Session, question: str, mode: str = "hybrid",
     # ---------- 3. 上下文裁剪 + 组装 Prompt ----------
     used = _trim_context(hits)
     references = _pack_references(used, [])
-    user_prompt = _build_user_prompt(question, used, rw.get("time_scope"))
+    user_prompt = _build_user_prompt(question, used, rw.get("time_scope"), coref)
 
     # ---------- 出口 2：LLM 未配置 / 调用失败 → 降级为仅检索 ----------
     client = get_llm_client()
     if not client.is_configured:
         latency_ms = (time.time() - started) * 1000
-        _save_qa_record(db, question, rw["bm25_query"], None, used, ret["fusion_mode"], None, latency_ms)
+        _save_qa_record(db, question, search_question, None, used, ret["fusion_mode"], None, latency_ms)
         return {
             **base,
             "answer": None,
@@ -471,7 +503,7 @@ def ask(db: Session, question: str, mode: str = "hybrid",
 
     if not resp["ok"]:
         latency_ms = (time.time() - started) * 1000
-        _save_qa_record(db, question, rw["bm25_query"], None, used,
+        _save_qa_record(db, question, search_question, None, used,
                         ret["fusion_mode"], client.model, latency_ms)
         return {
             **base,
@@ -491,7 +523,7 @@ def ask(db: Session, question: str, mode: str = "hybrid",
     references = _pack_references(used, cited)
 
     latency_ms = (time.time() - started) * 1000
-    _save_qa_record(db, question, rw["bm25_query"], answer, used,
+    _save_qa_record(db, question, search_question, answer, used,
                     ret["fusion_mode"], resp["model"], latency_ms)
 
     return {

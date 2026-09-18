@@ -24,7 +24,9 @@ import logging
 from collections import Counter
 from typing import List, Dict, Optional
 
-from app.config import BM25_K1, BM25_B
+from app.config import (
+    BM25_K1, BM25_B, BM25_IDENTIFIER_BOOST, BM25_IDENTIFIER_MIN_DIGITS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,14 @@ _RE_SUBSPLIT = re.compile(r"[\-\./_]+")
 
 # 子词最小长度（过滤 "00"、"01" 这类噪声片段）
 _MIN_SUB_TOKEN_LEN = 3
+
+# 标识符型 token 的识别式（token 已小写化）。
+#   ① 以 N 位以上连续数字开头  → 发票号码 25447000001712590935、统一社会信用代码 91440101ma59lp3t32
+#   ② 字母前缀 + 数字编号      → 单据编号 po-20260724-888、inv-20240115-001
+# 这类 token 的命中是"是不是同一份文档"的判定性证据，见 config.py 中的说明。
+_RE_IDENTIFIER = re.compile(
+    rf"^\d{{{BM25_IDENTIFIER_MIN_DIGITS},}}|^[a-z]{{2,}}[-_]?\d{{6,}}"
+)
 
 
 def tokenize(text: str) -> List[str]:
@@ -174,19 +184,32 @@ class BM25Index:
             return []
 
         scores: Dict[int, float] = {}
+        # 标识符命中单独累计 —— 不参与长度归一化，理由见 config.py 中的长注释
+        ident_scores: Dict[int, float] = {}
         avgdl = self._avgdl or 1.0
 
         for token in uniq:
             idf = self._idf(token)
             if idf <= 0:
                 continue
+            is_identifier = bool(_RE_IDENTIFIER.match(token))
+
             for idx in self._postings[token]:
                 tf = self._tf[idx].get(token, 0)
                 if not tf:
                     continue
-                dl = self._doc_len[idx]
-                denom = tf + self.k1 * (1.0 - self.b + self.b * dl / avgdl)
-                scores[idx] = scores.get(idx, 0.0) + idf * tf * (self.k1 + 1.0) / denom
+
+                if is_identifier:
+                    # 判定性证据：直接按 idf 加权累加，不除以长度归一化因子。
+                    # tf 不再参与 —— 同一份文档里编号出现几次不改变"就是这份"的结论。
+                    ident_scores[idx] = ident_scores.get(idx, 0.0) + idf * BM25_IDENTIFIER_BOOST
+                else:
+                    dl = self._doc_len[idx]
+                    denom = tf + self.k1 * (1.0 - self.b + self.b * dl / avgdl)
+                    scores[idx] = scores.get(idx, 0.0) + idf * tf * (self.k1 + 1.0) / denom
+
+        for idx, v in ident_scores.items():
+            scores[idx] = scores.get(idx, 0.0) + v
 
         if not scores:
             return []

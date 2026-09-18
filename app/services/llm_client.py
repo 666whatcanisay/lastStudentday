@@ -35,6 +35,18 @@ logger = logging.getLogger(__name__)
 # 可重试的 HTTP 状态码（服务端问题 / 限流）
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 
+# 多轮指代消解用的系统提示词（业界称 condense question）
+CONDENSE_SYSTEM_PROMPT = (
+    "你是对话问题改写助手。用户在多轮对话中提问，最新一句可能包含代词或省略。\n"
+    "请结合对话历史，把最新问题改写成一个**不依赖上下文、可独立理解**的完整问题。\n"
+    "规则：\n"
+    "1. 把「它 / 这张发票 / 该文档」这类代词，替换成历史中实际指代的文档标识"
+    "（优先用单据编号、发票号码等唯一标识）。\n"
+    "2. 保留原问题的全部语义，不要添加历史中没有的信息，不要回答问题本身。\n"
+    "3. 如果最新问题本身已经完整独立，原样返回。\n"
+    "4. 只输出改写后的问题本身，不要解释、不要引号、不要换行。"
+)
+
 # 查询改写用的系统提示词
 REWRITE_SYSTEM_PROMPT = (
     "你是检索查询改写助手。用户会用口语提问，你需要把它改写成更适合"
@@ -188,6 +200,44 @@ class LLMClient:
         if resp["ok"] and resp["content"]:
             # 改写结果只取第一行，防止模型多嘴
             return resp["content"].strip().splitlines()[0].strip()
+        return None
+
+    def condense_question(self, question: str, history: List[Dict]) -> Optional[str]:
+        """
+        多轮指代消解（condense question）：把依赖上下文的追问改写成独立完整的问题。
+
+        只取最近 3 轮历史 —— 更早的轮次对指代消解几乎没有价值，反而会稀释注意力。
+        失败返回 None，调用方回落到规则层。
+        """
+        recent = (history or [])[-3:]
+        if not recent:
+            return None
+
+        lines = ["【对话历史】"]
+        for i, h in enumerate(recent, 1):
+            lines.append(f"第{i}轮")
+            lines.append(f"  用户：{h.get('question') or ''}")
+            if h.get("top_file_name"):
+                lines.append(f"  命中文档：{h['top_file_name']}"
+                             + (f"（ID={h['top_doc_id']}）" if h.get("top_doc_id") else ""))
+            if h.get("top_chunk_text"):
+                snippet = " ".join((h["top_chunk_text"] or "").split())[:200]
+                lines.append(f"  文档片段：{snippet}")
+        lines.append("")
+        lines.append(f"【最新问题】{question}")
+        lines.append("")
+        lines.append("请输出改写后的独立问题。")
+
+        resp = self.chat(
+            messages=[
+                {"role": "system", "content": CONDENSE_SYSTEM_PROMPT},
+                {"role": "user", "content": "\n".join(lines)},
+            ],
+            temperature=0.0,
+            max_tokens=128,
+        )
+        if resp["ok"] and resp["content"]:
+            return resp["content"].strip().splitlines()[0].strip().strip("“”\"'")
         return None
 
     def test_connection(self) -> Dict:

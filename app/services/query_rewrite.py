@@ -296,6 +296,216 @@ def _expand_terms(query: str) -> List[str]:
     return terms
 
 
+# ==================== 多轮指代消解（阶段四） ====================
+
+# 代词与指代表达。
+# 刻意收窄，宁可漏判也不要误判：
+#   · 「它」用负向后顾排除「其他」
+#   · 不收裸「该」——中文里「应该」「该当」太常见，只收「该发票」「该单据」这类
+#     带中心词的形式
+#   · 「这个 / 这张」只在后面跟量词或直接作定语时才算指代，裸「这个」也可能是
+#     「这个金额」这种自足表达，但概率低，仍纳入
+# ⚠️ 备选项按「长的在前」排列 —— Python 正则在同一起始位置上是首个匹配即胜出，
+#    把「这张」放在「这张发票」前面会导致只替换掉「这张」，留下「发票」二字
+#    （实测出现 "2544…发票的开票日期是什么时候"）。
+PRONOUN_RE = re.compile(
+    r"(?<!其)它(?:的)?"
+    r"|这(?:张|份|笔|个)?(?:发票|文档|单据|文件|订单)"
+    r"|这(?:张|份|笔|单)"
+    r"|该(?:张|份|笔)?(?:发票|文档|单据|文件|订单)"
+    r"|上述(?:的)?(?:发票|文档|单据|文件|订单)?"
+    r"|(?:前面|刚才|刚刚)(?:那|这)(?:张|份|个|笔)?"
+    r"|上面(?:提到|说)(?:的)?(?:那)?(?:张|份|个|笔)?"
+    r"|此(?:发票|文档|单据|文件|订单)"
+)
+
+# 「主体词」——用来判断问题是否自带话题。
+#
+# 为什么需要区分主体词与属性词：多轮里有两类短问题，处理方式完全相反。
+#   · 「打车花了多少钱」   —— 「打车」是**主体**，说明用户在聊新东西 → 不该补锚点
+#   · 「价税合计是多少」   —— 「价税合计」是**属性**，只说明在问什么，
+#                             没说明问哪份文档 → 应补上一轮的锚点
+# 二者都很短、都可能含同义词表里的词，只能靠这份分类区分。
+_SUBJECT_HINT_WORDS = {
+    # 出行
+    "打车", "打的", "出租车", "网约车", "滴滴", "地铁", "高铁", "机票",
+    "行程", "行程单", "起点", "终点", "从哪到哪", "从哪到哪儿", "哪儿到哪儿",
+    "哪里到哪里", "去哪", "出差", "交通",
+    # 交易主体
+    "买家", "客户", "卖家", "供应商", "收款方", "购买方", "销售方", "抬头",
+    # 票据主体
+    "发票", "单据", "订单", "凭证", "报销", "合同",
+    # 货物
+    "货物", "商品", "品名", "设备", "服务器",
+}
+
+# 判别性字面量的抽取规则，按可信度从高到低排列。
+# 命中即用，不继续往下找 —— 编号类字面量的区分度远高于文件名。
+_ANCHOR_PATTERNS = [
+    # 单据编号：INV-20240115-001 / PO-20260724-888
+    re.compile(r"\b[A-Za-z]{2,}[-_]\d{6,}[-_]?\d*\b"),
+    # 发票号码：20 位纯数字
+    re.compile(r"\b\d{15,}\b"),
+    # 统一社会信用代码 / 纳税人识别号：18 位大写字母数字
+    re.compile(r"\b[0-9A-Z]{18}\b"),
+]
+
+# 文件名里的装饰性字符（【曹操出行-25.99元】xxx.pdf → 曹操出行）
+_FILENAME_NOISE_RE = re.compile(r"[【】\[\]（）()《》<>\"']")
+
+
+def _extract_anchor(chunk_text: str = "", file_name: str = "") -> Optional[str]:
+    """
+    从文档内容里抽出**最具区分度**的字面量，作为指代消解的锚点。
+
+    优先级：单据编号 > 长数字串 > 统一社会信用代码 > 文件名主干。
+    编号类字面量是精确 token，BM25 一次命中，向量路也认不出 ——
+    拿它当锚点能保证第二轮检索稳稳落在同一份文档上。
+    """
+    text = chunk_text or ""
+    for pat in _ANCHOR_PATTERNS:
+        m = pat.search(text)
+        if m:
+            return m.group(0)
+
+    # 退回文件名主干
+    if file_name:
+        stem = _FILENAME_NOISE_RE.sub(" ", file_name)
+        stem = re.sub(r"\.(pdf|png|jpg|jpeg|bmp|tif|tiff)$", "", stem, flags=re.I)
+        stem = " ".join(stem.split())
+        if stem:
+            return stem
+    return None
+
+
+def _has_own_anchor(question: str, now: Optional[datetime] = None) -> bool:
+    """
+    判断问题本身是否已经带了"话题锚点"。
+
+    用途：区分「接着上一轮问」（需要补锚点）和「换个话题问」（不该补锚点）。
+      自带锚点 → 新话题：「打车花了多少钱」「上个月的开票记录」「INV-…-001 的税额」
+      没有锚点 → 追问  ：「税额是多少」「价税合计是多少」「开票日期是什么时候」
+
+    判定依据（命中任一即为自带锚点）：
+      1. 含数字或字母 —— 编号、金额、日期都是判别性字面量
+      2. 含**主体词** —— 说明用户在聊一个新对象（注意不是属性词，见 _SUBJECT_HINT_WORDS）
+      3. 含时间表达 —— 「上个月的开票记录」自身已足够独立
+      4. 长度 ≥ 12 —— 够长的问题通常自带完整语义
+    """
+    if re.search(r"\d", question):
+        return True
+    if re.search(r"[A-Za-z]{2,}", question):
+        return True
+    if any(w in question for w in _SUBJECT_HINT_WORDS):
+        return True
+    if _parse_time_scope(question, now or datetime.now()):
+        return True
+    return len(question) >= 12
+
+
+def resolve_coreference(question: str, history: Optional[List[Dict]] = None,
+                        use_llm: bool = False, llm_client=None) -> Dict:
+    """
+    多轮指代消解：把「它的税额是多少」这类依赖上下文的问题，补成独立完整的问题。
+
+    设计取舍：**无状态**。历史由前端随请求带来，后端不存会话。
+    好处是不需要会话表、不需要数据库迁移、服务重启不丢上下文（前端持有）。
+
+    两层策略：
+      1. 规则层（默认，不需要 LLM Key）—— 代词识别 + 锚点替换
+      2. LLM 层（有 Key 时）—— 标准 condense-question，失败自动回落规则层
+
+    参数:
+      question — 当前问题
+      history  — [{"question":..,"answer":..,"top_doc_id":..,"top_file_name":..,
+                   "top_chunk_text":..}, ...]，按时间正序，最后一条是上一轮
+
+    返回:
+      {
+        "original": ..., "resolved": ..., "changed": bool,
+        "method": "none" | "rule" | "llm",
+        "pronoun": "它" | None,
+        "focus": {"doc_id":..,"file_name":..,"anchor":..} | None,
+      }
+    """
+    result = {
+        "original": question,
+        "resolved": question,
+        "changed": False,
+        "method": "none",
+        "pronoun": None,
+        "focus": None,
+    }
+
+    if not question or not question.strip() or not history:
+        return result
+
+    # ---------- 取焦点文档：最近一条带命中文档的历史 ----------
+    focus_entry = None
+    for entry in reversed(history):
+        if entry.get("top_doc_id"):
+            focus_entry = entry
+            break
+    if not focus_entry:
+        return result
+
+    anchor = _extract_anchor(
+        focus_entry.get("top_chunk_text") or "",
+        focus_entry.get("top_file_name") or "",
+    )
+    if not anchor:
+        return result
+
+    focus = {
+        "doc_id": focus_entry.get("top_doc_id"),
+        "file_name": focus_entry.get("top_file_name"),
+        "anchor": anchor,
+    }
+
+    # ---------- LLM 层（可选，优先） ----------
+    if use_llm and llm_client is not None and llm_client.is_configured:
+        try:
+            condensed = llm_client.condense_question(question, history)
+            if condensed and condensed != question:
+                result.update({
+                    "resolved": condensed,
+                    "changed": True,
+                    "method": "llm",
+                    "focus": focus,
+                })
+                return result
+        except Exception as e:  # 兜底：LLM 失败绝不阻断
+            logger.warning(f"LLM 指代消解失败，回落规则层: {e}")
+
+    # ---------- 规则层 ----------
+    m = PRONOUN_RE.search(question)
+    if m:
+        # 代词替换成锚点："它的税额是多少" → "25447000001712590935 的税额是多少"
+        # 补一个空格：锚点是长数字串，直接接中文会粘成一个 token，
+        # 既影响可读性，也让 bigram 分词多出无意义的跨词碎片。
+        replaced = PRONOUN_RE.sub(f"{anchor} ", question, count=1)
+        result.update({
+            "resolved": replaced,
+            "changed": True,
+            "method": "rule",
+            "pronoun": m.group(0),
+            "focus": focus,
+        })
+        return result
+
+    # 省略式追问："税额是多少"（无代词，也无自带锚点）
+    if not _has_own_anchor(question, now=None):
+        result.update({
+            "resolved": f"{anchor} {question}",
+            "changed": True,
+            "method": "rule",
+            "pronoun": None,
+            "focus": focus,
+        })
+
+    return result
+
+
 # ==================== 对外主函数 ====================
 
 def rewrite(query: str, now: Optional[datetime] = None,

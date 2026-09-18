@@ -59,16 +59,33 @@ class RagSearchRequest(BaseModel):
                     "默认开启，与 /ask 行为一致；设为 false 可观察『未改写』的原始检索效果，用于对比实验")
 
 
+class HistoryTurn(BaseModel):
+    """
+    多轮对话的一轮历史。
+
+    后端**不存会话**，历史由前端随请求带来。这样不需要会话表、
+    不需要数据库迁移，服务重启也不丢上下文（上下文由前端持有）。
+    """
+    question: str = Field(..., description="该轮用户问题")
+    answer: Optional[str] = Field(default=None, description="该轮回答（可为空）")
+    top_doc_id: Optional[int] = Field(default=None, description="该轮 Top-1 命中的文档ID（指代消解用）")
+    top_file_name: Optional[str] = Field(default=None, description="该轮 Top-1 命中的文件名")
+    top_chunk_text: Optional[str] = Field(default=None, description="该轮 Top-1 命中的分块文本（用于抽取唯一标识）")
+
+
 class RagAskRequest(BaseModel):
     """问答请求"""
-    question: str = Field(..., min_length=1, description="用户问题（可口语化、可含相对时间）")
+    question: str = Field(..., min_length=1, description="用户问题（可口语化、可含相对时间、可含代词）")
     mode: str = Field(default="hybrid", description="检索模式：vec / bm25 / hybrid")
     top_k: Optional[int] = Field(default=None, ge=1, le=20, description="送入 Prompt 的资料条数")
     doc_ids: Optional[List[int]] = Field(default=None, description="限定检索的文档ID范围")
     min_score: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="向量相似度阈值")
     fusion_mode: Optional[str] = Field(default=None, description="融合策略：rrf / weighted")
     rewrite: bool = Field(default=True, description="是否启用查询改写（相对时间解析 + 同义扩展）")
-    use_llm_rewrite: bool = Field(default=False, description="是否额外用 LLM 改写查询（会增加一次调用）")
+    use_llm_rewrite: bool = Field(default=False, description="是否额外用 LLM 改写查询（会增加调用次数）")
+    history: Optional[List[HistoryTurn]] = Field(
+        default=None, max_length=20,
+        description="多轮对话历史（按时间正序，最后一条为上一轮）。用于指代消解，如「它的税额是多少」")
 
 
 class RagRewriteRequest(BaseModel):
@@ -194,6 +211,8 @@ async def ask(req: RagAskRequest, db: Session = Depends(get_db)):
     if not req.question.strip():
         return ApiResponse.error(msg="问题不能为空", code=400)
 
+    history = [h.model_dump() for h in req.history] if req.history else None
+
     result = rag_ask(
         db,
         question=req.question,
@@ -204,6 +223,7 @@ async def ask(req: RagAskRequest, db: Session = Depends(get_db)):
         fusion_mode=req.fusion_mode,
         rewrite_enable=req.rewrite,
         use_llm_rewrite=req.use_llm_rewrite,
+        history=history,
     )
 
     # 降级时给前端一个明确的 msg，便于 UI 提示
