@@ -14,9 +14,13 @@ python-multipart==0.0.20
 sqlalchemy==2.0.36
 
 # OCR 引擎 (PaddleOCR → ONNX → INT8 量化)
-# ⚠️ Python 3.13 只支持到 1.2.3；用 --no-deps 安装避免 opencv 冲突：
-#   pip install --no-deps rapidocr-onnxruntime==1.2.3
-#   pip install onnxruntime pyclipper shapely six protobuf
+# ⚠️ Python 3.13 只支持到 1.2.3。
+# ⚠️ rapidocr 声明依赖 opencv-python>=4.5.1.48，而本项目用 opencv-python-headless。
+#    直接 `pip install -r requirements.txt` 会把两者**同时装上**（实测 pip 解析报告同现），
+#    后装者覆盖前者 → cv2.__file__ 指向不确定。所以 rapidocr 必须**单独**用 --no-deps 装：
+#      pip install -r requirements.txt
+#      pip install --no-deps rapidocr-onnxruntime==1.2.3
+#    （Dockerfile 已按此顺序自动处理，见 Dockerfile 内注释）
 rapidocr-onnxruntime==1.2.3
 onnxruntime==1.27.0
 
@@ -31,7 +35,16 @@ PyMuPDF==1.25.2
 # Excel 导出
 openpyxl==3.1.5
 
-# RapidOCR 运行时依赖（--no-deps 安装时需单独装）
+# RapidOCR 运行时依赖（--no-deps 安装时不会自动带入，必须显式列出）
+# 清单实测自 rapidocr-onnxruntime 1.2.3 的 METADATA requires_dist：
+#   pyclipper>=1.2.1 · onnxruntime>=1.7.0 · opencv-python>=4.5.1.48 · numpy>=1.19.3
+#   · six>=1.15.0 · Shapely>=1.7.1 · PyYAML · Pillow
+# 其中 opencv-python 由上面的 headless 版替代，onnxruntime/numpy/Pillow 亦已在上方列出。
+# 缺任一个都会让 `from rapidocr_onnxruntime import RapidOCR` 抛 ImportError
+# → 上层静默降级为 Mock 假识别（只在日志里 warning，接口照常返回成功）
+pyclipper>=1.2.1
+Shapely>=1.7.1
+PyYAML>=6.0.1
 six>=1.16.0
 
 # ==================== RAG 检索增强生成 ====================
