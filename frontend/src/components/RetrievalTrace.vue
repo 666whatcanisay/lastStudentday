@@ -62,7 +62,9 @@
                 size="small" effect="plain" class="kw-tag"
               >{{ t }}</el-tag>
             </template>
-            <span v-else class="tb-muted">无（问题已含语料术语）</span>
+            <!-- 不写「问题已含语料术语」—— 前端无法验证这个断言，
+                 真实原因通常只是没命中同义扩展规则。 -->
+            <span v-else class="tb-muted">无（未命中同义扩展规则）</span>
           </span>
         </div>
         <div class="tb-row">

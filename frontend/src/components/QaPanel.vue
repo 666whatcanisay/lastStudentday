@@ -174,7 +174,9 @@
                   class="ans-alert"
                 />
 
-                <!-- 回答正文：[n] 渲染成可点角标 -->
+                <!-- 回答正文：[n] 渲染成可点角标。
+                     角标带方括号而不是裸数字 —— 裸上标复制出来是「55,000.00元 1。」，
+                     看不出那个 1 是引用标记。 -->
                 <div v-if="m.result.answer" class="ans-text">
                   <template v-for="(p, i) in parseAnswer(m.result.answer)" :key="i">
                     <span v-if="p.type === 'text'">{{ p.text }}</span>
@@ -184,20 +186,36 @@
                       :class="{ 'is-uncited': !isCited(m.result, p.n) }"
                       :title="citeTitle(m.result, p.n)"
                       @click="openRef(m, p.n)"
-                    >{{ p.n }}</sup>
+                    >[{{ p.n }}]</sup>
                   </template>
                 </div>
                 <div v-else class="ans-text ans-fallback">
                   本次未生成回答（降级为仅检索模式，见上方说明）。
                 </div>
 
+                <!-- 未引用提示：回答没被任何检索片段支撑时说清楚 -->
+                <div v-if="m.result.answer && refsAllUncited(m.result)" class="ans-unsupported">
+                  <el-icon><WarningFilled /></el-icon>
+                  <span>模型未引用任何检索片段，这段回答未由你的资料支撑，请谨慎采用。</span>
+                </div>
+
                 <!-- 引用区 -->
                 <div v-if="m.result.references && m.result.references.length" class="ans-refs">
                   <div class="ar-head">
                     <el-icon><Link /></el-icon>
-                    <span>{{ m.result.degraded ? '检索到的原文片段' : '引用来源' }}</span>
-                    <el-tag v-if="!m.result.degraded" size="small" type="success" effect="plain">
-                      被引用 {{ citedCount(m.result) }} / {{ m.result.references.length }}
+                    <!-- 0 条被引用时它们就不是"引用来源"了，措辞必须跟着变，
+                         否则「引用来源」+「被引用 0/4」自相矛盾 -->
+                    <span>{{ m.result.degraded || refsAllUncited(m.result)
+                      ? '检索到的原文片段' : '引用来源' }}</span>
+                    <el-tag
+                      v-if="!m.result.degraded"
+                      size="small"
+                      :type="citedCount(m.result) ? 'success' : 'info'"
+                      effect="plain"
+                    >
+                      {{ citedCount(m.result)
+                        ? `被引用 ${citedCount(m.result)} / ${m.result.references.length}`
+                        : '模型未引用' }}
                     </el-tag>
                     <span class="ar-hint">点击卡片查看原文并高亮命中位置</span>
                   </div>
@@ -465,6 +483,16 @@ function citeTitle(result, n) {
 }
 function citedCount(result) {
   return (result?.references || []).filter((r) => r.cited).length
+}
+/** 模型一条片段都没引用。
+ *
+ *  依据是 cited 数据本身，**不去猜回答文本**（"无法回答""没有相关信息"这类
+ *  字符串匹配太脆，模型换个说法就失效）。0 条被引用有两种可能：
+ *  ①模型判断资料不相关而拒答 ②模型自己会答但没用上资料。
+ *  两种情况对用户的含义都是"这段回答没被资料支撑"，所以合并提示即可。 */
+function refsAllUncited(result) {
+  const refs = result?.references || []
+  return !result?.degraded && refs.length > 0 && citedCount(result) === 0
 }
 
 // ==================== 发送 ====================
@@ -746,6 +774,27 @@ defineExpose({ refresh: () => { loadConfig(); loadIndexStatus(); loadDocOptions(
   word-break: break-word;
 }
 .ans-fallback { color: #909399; }
+
+/* 「回答未被资料支撑」提示。
+   刻意做得比 el-alert 轻 —— 它不是错误，只是一条需要用户知情的状态，
+   用重色会让人误以为系统坏了。 */
+.ans-unsupported {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: #fdf6ec;
+  border-left: 3px solid #e6a23c;
+  color: #b88230;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.ans-unsupported .el-icon {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
 /* 引用角标：被引用的实心，未被引用的淡化 —— 与引用卡片视觉规则一致 */
 .cite-chip {
   display: inline-block;
