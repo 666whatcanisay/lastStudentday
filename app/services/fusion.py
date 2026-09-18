@@ -47,7 +47,8 @@ def _merge_side(merged: Dict, scores: Dict, hits: List[Dict], side: str, k: int,
 
 
 def rrf_fuse(vec_hits: List[Dict], bm25_hits: List[Dict], k: int = RRF_K,
-             vec_weight: float = 1.0, bm25_weight: float = 1.0) -> List[Dict]:
+             vec_weight: float = FUSION_WEIGHT_VEC,
+             bm25_weight: float = FUSION_WEIGHT_BM25) -> List[Dict]:
     """
     RRF 融合（默认策略）。
 
