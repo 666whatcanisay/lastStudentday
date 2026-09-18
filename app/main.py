@@ -89,7 +89,7 @@ app.include_router(rag.router)
 
 # ==================== 健康检查 ====================
 @app.get("/api/health")
-async def health_check():
+def health_check():
     """系统健康检查接口"""
     from app.services.ocr_engine import get_engine_info
     return {"code": 200, "msg": "success", "data": {"status": "running", "version": APP_VERSION, "ocr_engine": get_engine_info()}}
@@ -108,7 +108,7 @@ if STATIC_DIR.exists():
 
 
 @app.get("/")
-async def index():
+def index():
     """返回前端首页 — 优先使用 Vite 构建版，回退到 CDN 版"""
     vite_index = STATIC_VITE_DIR / "index.html"
     if vite_index.exists():
@@ -120,7 +120,7 @@ async def index():
 
 
 @app.get("/cdn")
-async def cdn_index():
+def cdn_index():
     """强制返回 CDN 版前端页面"""
     cdn_file = STATIC_DIR / "index.html"
     if cdn_file.exists():

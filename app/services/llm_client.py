@@ -20,6 +20,7 @@
    确定性错误立即返回，不做无意义重试（避免把配额打光）。
 """
 import logging
+import threading
 import time
 from typing import Dict, List, Optional
 
@@ -72,6 +73,11 @@ class LLMClient:
         self.timeout = timeout or LLM_TIMEOUT
         self.use_env_proxy = LLM_USE_ENV_PROXY if use_env_proxy is None else use_env_proxy
 
+        # 长连接客户端（懒创建）。httpx.Client 是**线程安全**的，可在多个线程间共享，
+        # 所以路由改为同步 def 跑在线程池里之后，这一份连接池依然可以共用。
+        self._http: Optional[httpx.Client] = None
+        self._http_lock = threading.Lock()
+
     # ---------- 状态 ----------
 
     @property
@@ -90,6 +96,25 @@ class LLMClient:
         }
 
     # ---------- 底层调用 ----------
+
+    def _get_http(self) -> httpx.Client:
+        """获取长连接客户端（懒创建 + 双重检查锁）。
+
+        之前是每次调用 `_build_client()` 新建再 `with` 关闭 ——
+        等于把连接池完全浪费掉，每次请求都要重做一次 TCP + TLS 握手。
+        """
+        if self._http is None:
+            with self._http_lock:
+                if self._http is None:
+                    self._http = self._build_client()
+        return self._http
+
+    def close(self) -> None:
+        """释放连接池（进程退出或配置变更时调用）"""
+        with self._http_lock:
+            if self._http is not None:
+                self._http.close()
+                self._http = None
 
     def _build_client(self) -> httpx.Client:
         return httpx.Client(
@@ -139,8 +164,11 @@ class LLMClient:
         for attempt in range(2):  # 最多 2 次尝试（首次 + 1 次重试）
             started = time.time()
             try:
-                with self._build_client() as client:
-                    resp = client.post("/chat/completions", json=payload)
+                # 复用长连接客户端，不要每次调用都新建 ——
+                # httpx.Client 内部维护连接池，每次重建都要重做 TCP + TLS 握手。
+                # 单次问答的 LLM 耗时约 0.6~0.8s，握手省下的几十到两百毫秒是可感知的。
+                client = self._get_http()
+                resp = client.post("/chat/completions", json=payload)
                 latency_ms = round((time.time() - started) * 1000, 1)
 
                 if resp.status_code == 200:
@@ -258,17 +286,30 @@ class LLMClient:
 # ==================== 进程内单例 ====================
 
 _client: Optional[LLMClient] = None
+_client_lock = threading.Lock()
 
 
 def get_llm_client() -> LLMClient:
-    """获取全局 LLM 客户端（复用连接配置，避免每次请求重建）"""
+    """获取全局 LLM 客户端（复用连接配置与连接池，避免每次请求重建）
+
+    并发安全：双重检查锁。`reset_llm_client` 也持同一把锁，
+    避免「重置」与「取用」交错时拿到半初始化的对象。
+    """
     global _client
     if _client is None:
-        _client = LLMClient()
+        with _client_lock:
+            if _client is None:
+                _client = LLMClient()
     return _client
 
 
 def reset_llm_client():
-    """重置单例（.env 变更后调用，使新配置生效）"""
+    """重置单例（.env 变更后调用，使新配置生效）
+
+    会先关闭旧实例的连接池，避免文件描述符泄漏。
+    """
     global _client
-    _client = None
+    with _client_lock:
+        if _client is not None:
+            _client.close()
+        _client = None

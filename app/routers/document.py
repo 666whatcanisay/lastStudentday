@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/stats", response_model=ApiResponse)
-async def get_document_stats(db: Session = Depends(get_db)):
+def get_document_stats(db: Session = Depends(get_db)):
     """
     获取文档统计数据接口
     - 文档总数
@@ -46,7 +46,7 @@ async def get_document_stats(db: Session = Depends(get_db)):
 
 
 @router.get("/list", response_model=ApiResponse)
-async def get_document_list(
+def get_document_list(
     keyword: Optional[str] = Query(None, description="搜索关键字（文件名或识别文本）"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(10, ge=1, le=100, description="每页条数"),
@@ -110,7 +110,7 @@ async def get_document_list(
 
 
 @router.get("/export", response_model=None)
-async def export_documents(
+def export_documents(
     doc_ids: str = Query(..., description="文档ID数组，逗号分隔，如 1,2,3"),
     db: Session = Depends(get_db),
 ):
@@ -190,7 +190,7 @@ async def export_documents(
 
 
 @router.get("/{doc_id}", response_model=ApiResponse)
-async def get_document_detail(doc_id: int, db: Session = Depends(get_db)):
+def get_document_detail(doc_id: int, db: Session = Depends(get_db)):
     """获取单份文档详情接口，返回原始文本、全部抽取结构化字段"""
     doc = db.query(DocumentInfo).filter(DocumentInfo.id == doc_id).first()
     if not doc:
@@ -218,7 +218,7 @@ async def get_document_detail(doc_id: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/{doc_id}", response_model=ApiResponse)
-async def delete_document(doc_id: int, db: Session = Depends(get_db)):
+def delete_document(doc_id: int, db: Session = Depends(get_db)):
     """删除文档及关联抽取字段数据接口"""
     doc = db.query(DocumentInfo).filter(DocumentInfo.id == doc_id).first()
     if not doc:

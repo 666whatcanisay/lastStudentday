@@ -22,7 +22,9 @@ from sqlalchemy.orm import Session
 from app.models import DocumentInfo
 from app.services.chunker import chunk_text
 from app.services.embedding import get_embedding_model
-from app.services.bm25_index import get_bm25_index, rebuild_bm25_index
+from app.services.bm25_index import (
+    get_bm25_index, rebuild_bm25_index, invalidate_index, rebuild_lock,
+)
 from app.services.vector_store import (
     upsert_chunks, set_index_state, load_chunks_for_bm25, get_index_status,
 )
@@ -47,12 +49,21 @@ def ensure_bm25_ready(db: Session) -> bool:
     确保 BM25 索引可用；未就绪时自动重建。
 
     检索路径调用它，实现"按需重建"而非每次写入都全量重建。
+
+    并发安全：外层先做一次无锁快检（绝大多数请求走这条路径），
+    未就绪才去抢 `rebuild_lock`，并在锁内**再查一次** ——
+    等锁期间索引可能已被别的线程重建好，此时直接复用，不重复重建。
+    重建 = 全量读库 + 分词，是很贵的操作，N 个并发请求各做一遍不可接受。
     """
-    idx = get_bm25_index()
-    if idx.is_ready:
+    if get_bm25_index().is_ready:
         return True
-    n = rebuild_bm25(db)
-    logger.info(f"BM25 索引按需重建完成：{n} 个分块")
+
+    with rebuild_lock:
+        if get_bm25_index().is_ready:        # 双重检查
+            return True
+        n = rebuild_bm25(db)
+        logger.info(f"BM25 索引按需重建完成：{n} 个分块")
+
     return n > 0
 
 
@@ -105,7 +116,9 @@ def index_document(db: Session, doc_id: int) -> Dict:
                         embed_model=model_tag if embeddings is not None else None)
 
         # ⑤ BM25 索引标记失效，下次检索按需重建
-        get_bm25_index().invalidate()
+        #    用 invalidate_index()（会递增代数）而不是直接操作实例 ——
+        #    若有重建正在构建中，代数的变化会让它把自己标为待重建，避免漏掉本次写入
+        invalidate_index()
 
         cost = (time.time() - t0) * 1000
         logger.info(f"[索引] 文档 {doc_id} 完成：{n} 个分块，"

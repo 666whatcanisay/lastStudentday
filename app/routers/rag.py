@@ -97,7 +97,7 @@ class RagRewriteRequest(BaseModel):
 # ==================== 索引管理 ====================
 
 @router.post("/index", response_model=ApiResponse)
-async def rebuild_index(req: RagIndexRequest, db: Session = Depends(get_db)):
+def rebuild_index(req: RagIndexRequest, db: Session = Depends(get_db)):
     """
     重建 RAG 索引接口
 
@@ -113,14 +113,14 @@ async def rebuild_index(req: RagIndexRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/index/status", response_model=ApiResponse)
-async def index_status(db: Session = Depends(get_db)):
+def index_status(db: Session = Depends(get_db)):
     """获取索引状态：已索引/待索引/失败文档数、分块数、向量就绪情况"""
     status = get_index_status(db)
     return ApiResponse.success(data=status)
 
 
 @router.post("/index/retry", response_model=ApiResponse)
-async def retry_index(db: Session = Depends(get_db)):
+def retry_index(db: Session = Depends(get_db)):
     """
     重试索引接口
 
@@ -139,7 +139,7 @@ async def retry_index(db: Session = Depends(get_db)):
 # ==================== 检索 ====================
 
 @router.post("/search", response_model=ApiResponse)
-async def search(req: RagSearchRequest, db: Session = Depends(get_db)):
+def search(req: RagSearchRequest, db: Session = Depends(get_db)):
     """
     检索接口（不调用 LLM，纯检索）
 
@@ -184,7 +184,7 @@ async def search(req: RagSearchRequest, db: Session = Depends(get_db)):
 # ==================== 问答 ====================
 
 @router.post("/ask", response_model=ApiResponse)
-async def ask(req: RagAskRequest, db: Session = Depends(get_db)):
+def ask(req: RagAskRequest, db: Session = Depends(get_db)):
     """
     智能问答接口（RAG 完整链路）
 
@@ -241,7 +241,7 @@ async def ask(req: RagAskRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/rewrite", response_model=ApiResponse)
-async def rewrite_only(req: RagRewriteRequest):
+def rewrite_only(req: RagRewriteRequest):
     """
     仅执行查询改写，不做检索（调试与教学演示用）
 
@@ -262,7 +262,7 @@ async def rewrite_only(req: RagRewriteRequest):
 # ==================== 配置与可用性 ====================
 
 @router.get("/config", response_model=ApiResponse)
-async def get_rag_config():
+def get_rag_config():
     """
     获取 RAG 配置与可用性状态
 

@@ -12,6 +12,7 @@
   因此把整个矩阵缓存在进程内存中，仅在索引变更时失效重建。
 """
 import logging
+import threading
 from typing import List, Dict, Optional, Tuple
 
 import numpy as np
@@ -39,19 +40,36 @@ class VectorCache:
         self._dirty: bool = True
         self._model_tag: Optional[str] = None
 
+        # 保护 _matrix / _meta / _dirty 这一组状态。
+        # 为什么必须加：路由改为同步 def 后请求跑在线程池里，可能出现
+        #   ① 多个线程同时发现缓存脏了，各自全量读一遍 embedding（20MB 级）
+        #   ② 一个线程正在重建时另一个线程 invalidate()，失效被覆盖丢失
+        #   ③ 最隐蔽的：A 线程读到新 _matrix、B 线程随即重建，
+        #      A 再读 _meta 就拿到**新元信息配旧矩阵**，行号错位 → 检索结果张冠李戴
+        # 所以 get() 必须在**同一把锁内**把两者一起取出来返回。
+        self._lock = threading.Lock()
+
     def invalidate(self) -> None:
         """标记缓存失效（索引写入/删除后调用）"""
-        self._dirty = True
+        with self._lock:
+            self._dirty = True
 
     @property
     def is_loaded(self) -> bool:
-        return not self._dirty and self._matrix is not None
+        with self._lock:
+            return not self._dirty and self._matrix is not None
 
     def get(self, db: Session) -> Tuple[Optional[np.ndarray], List[Dict]]:
-        """获取向量矩阵与元信息，必要时重建"""
-        if self._dirty or self._matrix is None:
-            self._reload(db)
-        return self._matrix, self._meta or []
+        """获取向量矩阵与元信息，必要时重建
+
+        持锁返回 —— 保证矩阵与元信息来自同一次加载，行号一一对应。
+        重建期间其他线程会等待，这是**期望行为**：
+        总比 5 个线程各读一遍 20MB 要好，也比拿到错配数据要好。
+        """
+        with self._lock:
+            if self._dirty or self._matrix is None:
+                self._reload(db)
+            return self._matrix, self._meta or []
 
     def _reload(self, db: Session) -> None:
         """从数据库全量加载向量与元信息"""

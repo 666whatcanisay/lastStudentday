@@ -14,6 +14,7 @@ OCR 文字识别引擎模块
 """
 import time
 import logging
+import threading
 import numpy as np
 from typing import List, Tuple, Optional
 
@@ -21,6 +22,12 @@ logger = logging.getLogger(__name__)
 
 # OCR 引擎单例
 _ocr_engine = None
+
+# 保护「首次初始化引擎」这一步。
+# 为什么必须加：路由改为同步 def 后请求跑在线程池里，多个请求可能**同时**
+# 触发懒加载，各自把 RapidOCR（含 3 个 ONNX session）初始化一遍 ——
+# 既浪费内存和几秒 CPU，后完成的还会覆盖前一个。
+_engine_lock = threading.Lock()
 
 
 def _init_rapidocr():
@@ -53,21 +60,31 @@ def _init_tesseract():
 
 
 def get_ocr_engine():
-    """获取 OCR 引擎单例（懒加载）"""
+    """获取 OCR 引擎单例（懒加载）
+
+    并发安全：整个初始化过程持 `_engine_lock`，并做双重检查 ——
+    等锁期间可能已有别的线程初始化完成，此时直接复用。
+    注意：锁覆盖的是**初始化**（可能几秒），不是识别本身；
+    RapidOCR 的 ONNX session 在推理时是线程安全的，不占这把锁。
+    """
     global _ocr_engine
     if _ocr_engine is not None:
         return _ocr_engine
 
-    # 按优先级尝试初始化
-    for init_func in [_init_rapidocr, _init_tesseract]:
-        result = init_func()
-        if result is not None:
-            _ocr_engine = result
+    with _engine_lock:
+        if _ocr_engine is not None:      # 双重检查
             return _ocr_engine
 
-    logger.error("所有 OCR 引擎均不可用！系统将以模拟模式运行")
-    _ocr_engine = ("mock", None)
-    return _ocr_engine
+        # 按优先级尝试初始化
+        for init_func in [_init_rapidocr, _init_tesseract]:
+            result = init_func()
+            if result is not None:
+                _ocr_engine = result
+                return _ocr_engine
+
+        logger.error("所有 OCR 引擎均不可用！系统将以模拟模式运行")
+        _ocr_engine = ("mock", None)
+        return _ocr_engine
 
 
 def _recognize_rapidocr(engine, img: np.ndarray) -> Tuple[str, float, List]:

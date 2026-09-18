@@ -16,6 +16,7 @@
 """
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -51,6 +52,12 @@ class EmbeddingModel:
         self._load_error: Optional[str] = None
         self._dim = EMBED_DIM
 
+        # 保护 load() 的加载过程。
+        # 为什么必须加：路由改为同步 def 后请求跑在线程池里，多个请求可能**同时**
+        # 触发懒加载。没有锁的话会各自建一个 ONNX session（约 23MB + 一次解析开销），
+        # 且后建的会覆盖前一个，白烧内存和 CPU。
+        self._load_lock = threading.Lock()
+
     # ---------- 加载 ----------
 
     def _resolve_onnx_path(self) -> Optional[Path]:
@@ -68,52 +75,60 @@ class EmbeddingModel:
         """
         加载模型与分词器。返回是否加载成功。
         失败时记录原因，不抛异常 —— 由上层决定是否降级。
+
+        并发安全：整个加载过程持 `_load_lock`，并做双重检查 ——
+        等锁期间可能已有别的线程加载完成，此时直接返回，不再重复建 session。
         """
         if self._ready:
             return True
 
-        try:
-            from tokenizers import Tokenizer
-            import onnxruntime as ort
+        with self._load_lock:
+            if self._ready:          # 双重检查
+                return True
 
-            onnx_path = self._resolve_onnx_path()
-            tok_path = self.model_dir / "tokenizer.json"
+            try:
+                from tokenizers import Tokenizer
+                import onnxruntime as ort
 
-            if onnx_path is None:
-                raise FileNotFoundError(
-                    f"未找到 ONNX 模型文件，请检查 {self.model_dir / 'onnx'} 目录"
+                onnx_path = self._resolve_onnx_path()
+                tok_path = self.model_dir / "tokenizer.json"
+
+                if onnx_path is None:
+                    raise FileNotFoundError(
+                        f"未找到 ONNX 模型文件，请检查 {self.model_dir / 'onnx'} 目录"
+                    )
+                if not tok_path.exists():
+                    raise FileNotFoundError(f"未找到分词器文件: {tok_path}")
+
+                t0 = time.time()
+                self._tokenizer = Tokenizer.from_file(str(tok_path))
+                self._tokenizer.enable_truncation(max_length=MAX_SEQ_LEN)
+                self._tokenizer.enable_padding(pad_id=0, pad_token="[PAD]")
+
+                opts = ort.SessionOptions()
+                opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                self._session = ort.InferenceSession(
+                    str(onnx_path), sess_options=opts, providers=["CPUExecutionProvider"]
                 )
-            if not tok_path.exists():
-                raise FileNotFoundError(f"未找到分词器文件: {tok_path}")
 
-            t0 = time.time()
-            self._tokenizer = Tokenizer.from_file(str(tok_path))
-            self._tokenizer.enable_truncation(max_length=MAX_SEQ_LEN)
-            self._tokenizer.enable_padding(pad_id=0, pad_token="[PAD]")
+                # 从模型输出维度确认向量维度，避免与配置不一致
+                out_shape = self._session.get_outputs()[0].shape
+                if isinstance(out_shape[-1], int):
+                    self._dim = out_shape[-1]
 
-            opts = ort.SessionOptions()
-            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            self._session = ort.InferenceSession(
-                str(onnx_path), sess_options=opts, providers=["CPUExecutionProvider"]
-            )
+                self._ready = True
+                logger.info(
+                    f"向量模型加载成功: {EMBED_MODEL_NAME} "
+                    f"({'INT8量化' if 'int8' in onnx_path.name else '全精度'}, "
+                    f"{self._dim}维, 耗时 {time.time() - t0:.2f}s)"
+                )
+                return True
 
-            # 从模型输出维度确认向量维度，避免与配置不一致
-            out_shape = self._session.get_outputs()[0].shape
-            if isinstance(out_shape[-1], int):
-                self._dim = out_shape[-1]
-
-            self._ready = True
-            logger.info(
-                f"向量模型加载成功: {EMBED_MODEL_NAME} "
-                f"({'INT8量化' if 'int8' in onnx_path.name else '全精度'}, "
-                f"{self._dim}维, 耗时 {time.time() - t0:.2f}s)"
-            )
-            return True
-
-        except Exception as e:
-            self._load_error = str(e)
-            self._ready = False
-            logger.warning(f"向量模型加载失败，将降级为 BM25 单路检索: {e}")
+            except Exception as e:
+                self._load_error = str(e)
+                self._ready = False
+                logger.warning(f"向量模型加载失败，将降级为 BM25 单路检索: {e}")
+                return False
             return False
 
     # ---------- 编码 ----------
@@ -215,12 +230,20 @@ class EmbeddingModel:
 
 _model: Optional[EmbeddingModel] = None
 
+# 保护「首次创建实例」这一步。实例内部的加载过程由 EmbeddingModel._load_lock 保护。
+_model_lock = threading.Lock()
+
 
 def get_embedding_model() -> EmbeddingModel:
-    """获取全局向量模型实例（懒加载，首次调用时加载）"""
+    """获取全局向量模型实例（懒加载，首次调用时加载）
+
+    并发安全：双重检查锁。快路径（已创建）不加锁，避免每次检索都抢锁。
+    """
     global _model
     if _model is None:
-        _model = EmbeddingModel()
+        with _model_lock:
+            if _model is None:
+                _model = EmbeddingModel()
     return _model
 
 

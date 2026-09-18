@@ -27,7 +27,7 @@ class OcrRequest(BaseModel):
 
 
 @router.post("/recognize", response_model=ApiResponse)
-async def recognize_document(req: OcrRequest, db: Session = Depends(get_db)):
+def recognize_document(req: OcrRequest, db: Session = Depends(get_db)):
     """
     执行文档 OCR 识别接口
     流程: 加载文件 → 图像预处理 → 轻量化OCR推理 → 文本字段抽取 → 存入数据库
@@ -129,7 +129,7 @@ async def recognize_document(req: OcrRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/engine-info", response_model=ApiResponse)
-async def get_ocr_engine_info():
+def get_ocr_engine_info():
     """获取当前 OCR 引擎信息（用于前端展示引擎状态）"""
     info = get_engine_info()
     return ApiResponse.success(data=info)

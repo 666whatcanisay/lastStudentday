@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/upload", response_model=ApiResponse)
-async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
+def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """
     文档文件上传接口
     - 支持 JPG、PNG、BMP 图片、PDF 文件
@@ -38,7 +38,9 @@ async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db
         )
 
     # 2. 读取文件内容并校验大小
-    file_bytes = await file.read()
+    #    同步读：本路由已改为 def，FastAPI 会把它放进线程池执行，
+    #    这里用 UploadFile.file（底层的 SpooledTemporaryFile）而不是 await file.read()。
+    file_bytes = file.file.read()
     if len(file_bytes) > MAX_FILE_SIZE:
         return ApiResponse.error(
             msg=f"文件大小超过限制({MAX_FILE_SIZE // 1024 // 1024}MB)",

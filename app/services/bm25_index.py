@@ -21,6 +21,7 @@ BM25 关键词检索模块（纯 Python 实现，零第三方依赖）
 import re
 import math
 import logging
+import threading
 from collections import Counter
 from typing import List, Dict, Optional
 
@@ -29,6 +30,20 @@ from app.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ==================== 并发控制 ====================
+# 背景：路由从 async def 改为同步 def 后，请求由 FastAPI 线程池并发执行，
+#       下面这些模块级可变状态**不再**天然串行。加锁不是"以防万一"，
+#       而是配合这次改动必须同时做的事 —— 先解阻塞再加锁，中间那段时间会真出竞态。
+#
+# 两把锁分工不同，别混：
+#   _index_lock  —— 保护「_index 引用」与「_index_gen 代数」，临界区极短（只做赋值）
+#   rebuild_lock —— 保证同一时刻只有**一次重建**在跑（重建 = 全量读库 + 分词，很贵）
+_index_lock = threading.RLock()
+
+# 重建串行化锁。公开名字是因为它需要被上层协作使用：
+#   rag_indexer.ensure_bm25_ready 持它做双重检查，避免 N 个并发请求各重建一遍。
+rebuild_lock = threading.Lock()
 
 # 字母数字串（含常见连接符）或中文串
 _RE_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-\./_]*|[\u4e00-\u9fff]+")
@@ -268,20 +283,72 @@ class BM25Index:
 
 _index: Optional[BM25Index] = None
 
+# 索引失效代数。每次 invalidate_index() 递增。
+# 用途：检测「某次重建在构建期间，索引被标记失效」这种情况 ——
+# 那次重建读到的分块可能已经过期，不能当成就绪索引装上去。
+_index_gen: int = 0
+
 
 def get_bm25_index() -> BM25Index:
-    """获取全局 BM25 索引实例（懒加载）"""
+    """获取全局 BM25 索引实例（懒加载）
+
+    并发安全：双重检查锁。快路径（已创建）只读一次全局引用，不抢锁。
+    """
     global _index
-    if _index is None:
-        _index = BM25Index()
-    return _index
+    idx = _index
+    if idx is None:
+        with _index_lock:
+            if _index is None:
+                _index = BM25Index()
+            idx = _index
+    return idx
+
+
+def invalidate_index() -> None:
+    """标记全局 BM25 索引失效（索引写入/删除后调用）
+
+    与 `BM25Index.invalidate()` 的区别：本函数还递增代数，
+    使「正在构建中」的那次重建不会把过期快照误标为就绪。
+    调用方应该用这个，而不是直接操作实例。
+    """
+    global _index_gen
+    with _index_lock:
+        _index_gen += 1
+        if _index is not None:
+            _index.invalidate()
 
 
 def rebuild_bm25_index(chunks: List[Dict]) -> BM25Index:
-    """用给定分块重建全局 BM25 索引"""
-    idx = get_bm25_index()
-    idx.build(chunks)
-    return idx
+    """用给定分块重建全局 BM25 索引 —— **构建新实例后原子替换引用**
+
+    为什么不用原来的「原地 build()」：
+      原地重建会先清空 _postings / _df / _tf，再逐条填回去。中间有一段窗口，
+      并发检索读到的就是**半成品索引**（部分文档凭空消失、df 统计不对）。
+      语料越大，这个窗口越长。
+      改成「新实例构建完 → 锁内换引用」之后，读者手上那份**始终自洽**，
+      而且构建全程不需要挡住读者（分词是 CPU 密集的，锁要拿得越短越好）。
+
+    调用方若想避免并发重复重建，应在外层持 `rebuild_lock` 做双重检查
+    （见 rag_indexer.ensure_bm25_ready）。
+    """
+    global _index, _index_gen
+
+    with _index_lock:
+        gen_at_start = _index_gen
+
+    fresh = BM25Index()
+    fresh.build(chunks)              # 锁外构建：耗时长，但不阻塞任何读者
+
+    with _index_lock:
+        if _index_gen != gen_at_start:
+            # 构建期间发生过失效 —— 这份 chunks 可能已不包含最新写入的分块。
+            # 仍然装上（总比留着一个更旧的索引好），但标记为未就绪，
+            # 让下一次检索触发重建，从而收敛到最新状态。
+            fresh.invalidate()
+            logger.info("BM25 重建期间检测到索引失效，新索引已标记为待重建")
+        _index = fresh
+
+    return fresh
 
 
 if __name__ == "__main__":
