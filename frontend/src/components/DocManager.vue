@@ -55,6 +55,26 @@
       </el-col>
     </el-row>
 
+    <!-- ===== 引擎降级提示 =====
+         用全局横幅而不是逐条标记：引擎模式本来就是**全局**状态。
+         逐条标记需要给 DocumentInfo 加「引擎模式」字段 + 数据库迁移，
+         而本项目只有 create_all()（只建表不改表），本轮未引入 Alembic，故不做。 -->
+    <el-alert
+      v-if="ocrEngine.optimized === false"
+      class="mock-alert"
+      type="warning"
+      :closable="false"
+      show-icon
+      style="margin-bottom: 16px"
+    >
+      <template #title>当前为模拟引擎 (Mock)，识别结果是占位文本</template>
+      <div>
+        RapidOCR 未能加载，系统已降级为模拟引擎。下表里标记为「识别成功」的文档，
+        其识别文本均为<b>占位内容，并非真实识别结果</b>，导出的 Excel 同样如此。
+        请检查后端依赖是否完整（需要 pyclipper / Shapely / PyYAML / onnxruntime）。
+      </div>
+    </el-alert>
+
     <!-- ===== 文档上传区域 ===== -->
     <el-card class="upload-card" shadow="never">
       <template #header>
@@ -77,7 +97,8 @@
         <div class="el-upload__text">将文件拖到此处，或<em>点击上传</em></div>
         <template #tip>
           <div class="el-upload__tip">
-            系统将自动执行图像预处理 → 轻量化OCR识别 → 结构化字段抽取
+            上传后自动执行「图像预处理 → OCR识别 → 结构化字段抽取」。
+            <b>多页 PDF 逐页处理，10 页约需 40 秒</b>，请耐心等待、勿关闭页面。
           </div>
         </template>
       </el-upload>
@@ -268,7 +289,9 @@ const uploadRef = ref()
 const detailVisible = ref(false)
 const currentDoc = ref(null)
 
-const ocrEngine = reactive({ name: '', description: '', optimized: false })
+// optimized: null = 尚未取到引擎信息（未知）。不要用 false 作默认值 ——
+// 那样首屏会先把「未知」误显示成「模拟引擎 (Mock)」闪一下。
+const ocrEngine = reactive({ name: '', description: '', optimized: null })
 const stats = reactive({ total: 0, success: 0, avgCost: '0.0' })
 
 // ==================== 工具函数 ====================
@@ -393,7 +416,7 @@ async function customUpload(options) {
 async function recognizeDoc(docId, fileName) {
   const notif = ElNotification({
     title: 'OCR识别中',
-    message: `${fileName || '文档'} 正在识别...`,
+    message: `${fileName || '文档'} 正在识别...（多页 PDF 逐页处理，10 页约需 40 秒，请勿关闭页面）`,
     type: 'info',
     duration: 0,
   })
@@ -411,7 +434,15 @@ async function recognizeDoc(docId, fileName) {
     loadStats()
   } catch (e) {
     notif.close()
-    ElNotification({ title: '识别失败', message: 'OCR识别失败', type: 'error' })
+    // 带上真实原因。原来这里是硬编码的「OCR识别失败」，
+    // 用户完全不知道是超时、文件损坏还是服务端出错。
+    const reason = e?.response?.data?.msg || e?.message || '未知原因'
+    ElNotification({
+      title: '识别失败',
+      message: `${fileName || '文档'}：${reason}`,
+      type: 'error',
+      duration: 6000,
+    })
     loadDocuments()
   }
 }

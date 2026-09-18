@@ -109,15 +109,34 @@ def recognize_document(req: OcrRequest, db: Session = Depends(get_db)):
             for e in doc.extracts
         ]
 
+        # 如实标注引擎模式。
+        # 背景：RapidOCR 加载失败时会降级为 Mock 引擎，返回的是**占位假文本**，
+        # 但流程本身没出错 —— 旧实现一律回 "OCR识别成功"，于是文档列表和导出的
+        # Excel 里都记成「识别成功」，只看列表根本察觉不到。
+        # 顶栏虽然会显示「模拟引擎 (Mock)」warning 标签，但那是全局状态、
+        # 且导出成 Excel 后就完全丢失了上下文。
+        engine_info = get_engine_info()
+        is_mock = not engine_info.get("optimized", True)
+        msg = (
+            "OCR识别完成（当前为模拟引擎 Mock，以上文本为占位内容，非真实识别结果）"
+            if is_mock else "OCR识别成功"
+        )
+        if is_mock:
+            logger.warning(
+                f"文档 ID={doc.id} 由 Mock 引擎处理，结果为占位文本（RapidOCR 未加载成功）"
+            )
+
         return ApiResponse.success(
             data={
                 "doc_id": doc.id,
                 "status": doc.status,
                 "ocr_raw_text": doc.ocr_raw_text,
                 "infer_cost": doc.infer_cost,
+                "engine_optimized": engine_info.get("optimized", True),
+                "engine_name": engine_info.get("name"),
                 "extracts": [e.model_dump() for e in extract_list],
             },
-            msg="OCR识别成功",
+            msg=msg,
         )
 
     except Exception as e:

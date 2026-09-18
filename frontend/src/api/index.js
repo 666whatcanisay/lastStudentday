@@ -34,7 +34,20 @@ http.interceptors.response.use(
                 ElMessage.error('请求参数校验失败 (422)')
             }
         } else {
-            ElMessage.error(error.response?.data?.message || error.response?.data?.msg || error.message || '网络错误')
+            // 优先用后端给的 msg（后端返回的都是中文、可操作）。
+            // 没有 response 时（超时 / 断网）axios 的 error.message 是**英文**的
+            // （"timeout of 30000ms exceeded" / "Network Error"），
+            // 直接透给用户等于没有提示，所以这里必须映射成中文。
+            const backendMsg = error.response?.data?.message || error.response?.data?.msg
+            let fallback
+            if (error.code === 'ECONNABORTED' || /timeout/i.test(error.message || '')) {
+                fallback = '请求超时：文档较大或服务繁忙，请稍后重试'
+            } else if (!error.response) {
+                fallback = '网络错误：无法连接后端服务，请确认服务已启动'
+            } else {
+                fallback = `请求失败（HTTP ${error.response.status}）`
+            }
+            ElMessage.error(backendMsg || fallback)
         }
         return Promise.reject(error)
     }
@@ -53,9 +66,16 @@ export function uploadFile(file, onProgress) {
     })
 }
 
-/** OCR 识别 */
+/**
+ * OCR 识别
+ *
+ * 单独设 300s 超时：多页 PDF 是**逐页**推理的。实测（本机，已含图像预处理提速）：
+ *   5 页 ≈ 21s，10 页 ≈ 35s
+ * 全局的 30s 对 10 页以上必然误报超时 —— 而服务端其实还在正常跑完，
+ * 用户看到「识别失败」后重试，反而造成重复识别。
+ */
 export function recognizeOCR(docId) {
-    return http.post('/ocr/recognize', { doc_id: docId })
+    return http.post('/ocr/recognize', { doc_id: docId }, { timeout: 300000 })
 }
 
 /** 文档统计数据 */

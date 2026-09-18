@@ -95,7 +95,9 @@ function onTabChange(name) {
 
 // ==================== OCR 引擎信息 ====================
 const showEngineInfo = ref(false)
-const ocrEngine = reactive({ name: '', description: '', optimized: false })
+// optimized: null = 尚未取到引擎信息（未知）。不要用 false 作默认值 ——
+// 那样首屏会先把「未知」误显示成「模拟引擎 (Mock)」闪一下。
+const ocrEngine = reactive({ name: '', description: '', optimized: null })
 
 async function fetchHealth() {
   try {
