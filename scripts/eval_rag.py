@@ -117,9 +117,13 @@ def run_one(db, q: Dict, mode: str, top_k: int,
     # BM25 的 top1 原始分。retrieve() 不返回它，但它是诊断无结果门控的必需品：
     # 现行门控要求「bm25 零命中」，只要查询含常见词（公司/金额/日期）就必然命中，
     # 门控直接被关掉。要判断这是不是结构性问题，必须看到分数有多低。
+    #
+    # ⚠️ 必须用**改写后**的 bm25_query 来测，不能再用原句 —— 生产链路是
+    #    rewrite() → 分路投喂，用原句测出来的分数与线上不是同一个东西。
+    bm25_probe = kwargs.get("bm25_query") or q["query"]
     bm25_top1 = 0.0
     if ensure_bm25_ready(db):
-        bh = get_bm25_index().search(q["query"], top_n=1)
+        bh = get_bm25_index().search(bm25_probe, top_n=1)
         if bh:
             bm25_top1 = bh[0]["score"]
 
