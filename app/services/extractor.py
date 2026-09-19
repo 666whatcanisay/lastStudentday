@@ -23,6 +23,29 @@ FIELD_LABELS = {
 }
 
 
+# OCR 常见「数字书写噪声」修复。
+#
+# 为什么要做这一步：实测发现 OCR 与抽取的错误会**叠加** ——
+# OCR 把 `36,577.56` 读成 `36, 577.56`（千分位后插空格）、
+# 把 `54,464.66` 读成全角逗号 `54，464.66`，
+# 而金额正则的字符类是 `[0-9,]`（只认半角逗号），
+# `\.[0-9]{2}` 又要求逗号后紧跟 3 位数字 —— 于是**连兜底模式也失配**。
+#
+# ⚠️ 刻意只做这两处定点修复，**不做通用的全角转半角**：
+# 单据编号里可能出现全角字符，整体转换会引入新的失配风险。
+_FIX_NUMERIC_NOISE = (
+    (re.compile(r"(?<=\d)[，](?=\d)"), ","),        # 数字之间的全角逗号 → 半角
+    (re.compile(r"(?<=\d),[ \t]+(?=\d{3}\b)"), ","),  # 千分位逗号后的空格 → 移除
+)
+
+
+def _normalize_for_extract(text: str) -> str:
+    """抽取前的定点归一化（只修数字书写噪声，不动其他字符）"""
+    for pattern, repl in _FIX_NUMERIC_NOISE:
+        text = pattern.sub(repl, text)
+    return text
+
+
 def _extract_by_patterns(text: str, patterns: list, field_name: str) -> str:
     """
     使用多个正则模式依次匹配，返回第一个匹配到的值
@@ -50,18 +73,21 @@ def extract_fields(raw_text: str) -> List[Dict[str, str]]:
             {"field_name": FIELD_LABELS["amount"], "field_value": None},
         ]
 
+    # 先做定点归一化，修复 OCR 的数字书写噪声（详见 _normalize_for_extract 注释）
+    text = _normalize_for_extract(raw_text)
+
     results = []
 
     # 抽取单据编号
-    doc_number = _extract_by_patterns(raw_text, DOC_NUMBER_PATTERNS, "单据编号")
+    doc_number = _extract_by_patterns(text, DOC_NUMBER_PATTERNS, "单据编号")
     results.append({"field_name": FIELD_LABELS["doc_number"], "field_value": doc_number})
 
     # 抽取日期
-    date = _extract_by_patterns(raw_text, DATE_PATTERNS, "日期")
+    date = _extract_by_patterns(text, DATE_PATTERNS, "日期")
     results.append({"field_name": FIELD_LABELS["date"], "field_value": date})
 
     # 抽取金额
-    amount = _extract_by_patterns(raw_text, AMOUNT_PATTERNS, "金额")
+    amount = _extract_by_patterns(text, AMOUNT_PATTERNS, "金额")
     results.append({"field_name": FIELD_LABELS["amount"], "field_value": amount})
 
     return results
