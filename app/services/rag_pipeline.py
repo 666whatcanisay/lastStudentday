@@ -32,10 +32,14 @@ from app.services.bm25_index import get_bm25_index
 from app.services.embedding import get_embedding_model
 from app.services.fusion import fuse
 from app.services.llm_client import get_llm_client
+from app.services import revisions as rev_svc
 from app.services.query_rewrite import resolve_coreference
 from app.services.query_rewrite import rewrite as rewrite_query
 from app.services.rag_indexer import ensure_bm25_ready
-from app.services.vector_store import search_vector
+from app.services.vector_store import (
+    search_vector, get_eligible_doc_ids, filter_stale_hits,
+)
+from app.services.backup_gate import GATE
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,13 @@ NO_HIT_TEXT = "未检索到与问题相关的资料，请尝试换一种问法�
 LLM_DOWN_TEXT = (
     "（当前未配置云端 LLM，已降级为「仅检索」模式。"
     "以下为与问题最相关的原文片段，请自行查阅；配置 LLM_API_KEY 后可获得归纳回答。）"
+)
+
+# 回答生成期间资料失效时的提示（任务书 3.2：
+# 云端请求一旦发出无法撤回，但可以不把它当有效回答展示或记录）
+STALE_ANSWER_TEXT = (
+    "（生成回答期间，所依据的资料已被修改或删除，本次结果已作废。"
+    "请重新提问后再查看。）"
 )
 
 
@@ -189,6 +200,29 @@ def _dedup(hits: List[Dict], max_per_doc: int = MAX_HITS_PER_DOC) -> List[Dict]:
     return result
 
 
+def _empty_retrieval(mode: str, fusion_mode: str, min_score: float,
+                     score_margin: float, bm25_coverage_min: float,
+                     no_hit: bool = True) -> Dict:
+    """统一的空结果结构 —— 保证上层拿到的字段永远齐全，不用到处判空"""
+    return {
+        "hits": [],
+        "mode": mode,
+        "fusion_mode": fusion_mode if mode == "hybrid" else None,
+        "vec_count": 0,
+        "bm25_count": 0,
+        "min_score": min_score,
+        "score_margin": score_margin,
+        "vec_top1": 0.0,
+        "bm25_coverage": 0.0,
+        "bm25_coverage_min": bm25_coverage_min,
+        "doc_scope_count": 0,
+        "dropped_stale": 0,
+        "no_hit": no_hit,
+        "degraded": False,
+        "degrade_reason": None,
+    }
+
+
 def retrieve(db: Session, query: str, mode: str = "hybrid",
              top_k: Optional[int] = None,
              doc_ids: Optional[List[int]] = None,
@@ -205,7 +239,11 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
     参数:
       mode         — "vec" 仅向量 / "bm25" 仅关键词 / "hybrid" 双路融合
       top_k        — 最终返回条数，默认取配置 RETRIEVE_TOP_K
-      doc_ids      — 限定检索的文档范围
+      doc_ids      — 限定检索的文档范围（详见 get_eligible_doc_ids）：
+                    不传 / None = 全部**可用**文档；
+                    空列表 [] = 明确不要任何文档，**绝不扩大为全部**。
+                    可用 = 未删除 + 有当前有效版本 + 索引指向该版本。
+                    范围在向量路与关键词路**召回前**生效，并在最终结果再次校验。
       min_score    — 向量相似度**噪声下限**，默认取配置 RETRIEVE_MIN_SCORE
       fusion_mode  — 融合策略 "rrf" / "weighted"，默认取配置 FUSION_MODE
       score_margin — 向量路**相对带宽**，默认取配置 RETRIEVE_SCORE_MARGIN。
@@ -243,6 +281,15 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
                          else bm25_coverage_min)
     fusion_mode = fusion_mode or FUSION_MODE
 
+    # ---------- 检索范围 ----------
+    # 只召回"当前版本索引已就绪且未被删除"的文档；索引未就绪的不拿旧索引兜底。
+    # 空列表是用户明确指定的空范围，直接返回空，不静默扩大成全库。
+    scope = get_eligible_doc_ids(db, doc_ids)
+    if doc_ids is not None and len(doc_ids) == 0:
+        logger.info("检索范围为空列表（明确无文档）：返回空结果")
+        return _empty_retrieval(mode, fusion_mode, min_score, score_margin,
+                                bm25_coverage_min, no_hit=True)
+
     # 分路查询：未显式提供时退回同一句（保持与阶段二 /search 接口的行为兼容）
     vec_query = vec_query or query
     bm25_query = bm25_query or query
@@ -258,7 +305,7 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
         if model.is_ready or model.load():
             qv = model.encode_one(vec_query, is_query=True)
             if qv is not None:
-                vec_hits = search_vector(db, qv, top_n=RETRIEVE_TOP_N_VEC, doc_ids=doc_ids)
+                vec_hits = search_vector(db, qv, top_n=RETRIEVE_TOP_N_VEC, doc_ids=scope)
 
                 # 两级过滤：绝对噪声下限 + 相对 top1 带宽
                 #   截断线 = max(min_score, top1 - score_margin)
@@ -287,7 +334,7 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
     if mode in ("bm25", "hybrid"):
         if ensure_bm25_ready(db):
             idx = get_bm25_index()
-            bm25_hits = idx.search(bm25_query, top_n=RETRIEVE_TOP_N_BM25)
+            bm25_hits = idx.search(bm25_query, top_n=RETRIEVE_TOP_N_BM25, doc_ids=scope)
             if bm25_hits:
                 mass = idx.query_idf_mass(bm25_query)
                 if mass > 0:
@@ -322,8 +369,13 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
     else:
         no_hit = len(fused) == 0
 
-    # ---------- 去重与截断 ----------
-    final = [] if no_hit else _dedup(fused)[:top_k]
+    # ---------- 去重、版本校验与截断 ----------
+    # 顺序有讲究：先去重 → 再剔除过期/已删除 → 最后才截断。
+    # 若先截断再校验，被剔除的空位不会补位，Top-K 名额白白浪费。
+    deduped = _dedup(fused)
+    validated = filter_stale_hits(db, deduped)
+    dropped = len(deduped) - len(validated)
+    final = [] if no_hit else validated[:top_k]
 
     # ---------- 补充展示字段 ----------
     for h in final:
@@ -340,6 +392,8 @@ def retrieve(db: Session, query: str, mode: str = "hybrid",
         "vec_top1": round(vec_top1, 4),
         "bm25_coverage": round(bm25_coverage, 4),
         "bm25_coverage_min": bm25_coverage_min,
+        "doc_scope_count": len(scope),
+        "dropped_stale": dropped,
         "no_hit": no_hit,
         "degraded": degraded,
         "degrade_reason": degrade_reason,
@@ -377,6 +431,10 @@ def _pack_references(hits: List[Dict], cited: List[int]) -> List[Dict]:
             "vec_score": h.get("vec_score"),
             "bm25_score": h.get("bm25_score"),
             "score": h.get("score"),
+            # 方案 B：来源归属 —— 前端据此区分"正文引用"与"结构化字段"，
+            # 并保证引用不会被误认为当前版本之外的旧内容
+            "revision": h.get("revision"),
+            "source_kind": h.get("source_kind") or "text",
         })
     return refs
 
@@ -384,7 +442,10 @@ def _pack_references(hits: List[Dict], cited: List[int]) -> List[Dict]:
 def _save_qa_record(db: Session, question: str, rewritten: str, answer: Optional[str],
                     hits: List[Dict], fusion_mode: Optional[str],
                     llm_model: Optional[str], latency_ms: float) -> None:
-    """写入问答记录。失败不影响主流程（历史留痕是辅助能力，不该拖垮问答）。"""
+    """写入问答记录。失败不影响主流程（历史留痕是辅助能力，不该拖垮问答）。
+
+    走写入门禁：备份进行中的记录写不进去，宁可丢一条历史也不破坏备份一致性。
+    """
     try:
         top_score = None
         for h in hits:
@@ -401,11 +462,49 @@ def _save_qa_record(db: Session, question: str, rewritten: str, answer: Optional
             llm_model=llm_model,
             latency_ms=round(latency_ms, 1),
         )
-        db.add(record)
-        db.commit()
+        with GATE.write_section("qa_record"):
+            db.add(record)
+            db.commit()
     except Exception as e:
         db.rollback()
         logger.warning(f"问答记录写入失败（不影响回答）: {e}")
+
+
+def _refetch_head_text(db: Session, doc_id: int, limit: int = 800) -> Optional[str]:
+    """按 doc_id 从当前有效版本重取资料片段（替代客户端带来的旧片段）"""
+    try:
+        snap = rev_svc.get_effective_snapshot(db, doc_id)
+        if snap and snap.effective_text:
+            return snap.effective_text[:limit]
+    except Exception as e:
+        logger.warning(f"重取文档 {doc_id} 有效文本失败: {e}")
+    return None
+
+
+def _reseat_history(db: Session, history: Optional[List[Dict]],
+                    scope_ids: List[int]) -> List[Dict]:
+    """
+    重定位多轮历史里的 Top-1 资料（任务书 3.2）。
+
+    客户端带来的 top_chunk_text **不可信**：它可能是旧版本的片段，
+    也可能对应的文档早已被删除。后端只保留 doc_id 这一事实，
+    文本按"当前仍有效的文档范围"重新取回来；不在范围内的条目清空文本（
+    取不到锚点，指代自然回到常规检索），并把 doc_id 记入 stale_history_docs，
+    让前端把旧会话引用标成"旧版本/已删除"。
+    """
+    if not history:
+        return []
+
+    scope = set(scope_ids or [])
+    reseated: List[Dict] = []
+    for entry in history:
+        e = dict(entry)
+        doc_id = e.get("top_doc_id")
+        if doc_id is not None:
+            e["top_chunk_text"] = (_refetch_head_text(db, doc_id)
+                                   if doc_id in scope else None)
+        reseated.append(e)
+    return reseated
 
 
 def ask(db: Session, question: str, mode: str = "hybrid",
@@ -444,7 +543,16 @@ def ask(db: Session, question: str, mode: str = "hybrid",
     """
     started = time.time()
 
-    # ---------- 0. 多轮指代消解（仅在有历史时生效） ----------
+    # ---------- 0. 会话资料重定位 + 多轮指代消解 ----------
+    # 先算一次可用范围：既用于历史片段重取，也用于随后的检索过滤。
+    # 客户端带来的旧 top_chunk_text 一律不直接采信（任务书 3.2）。
+    scope = get_eligible_doc_ids(db, doc_ids)
+    history = _reseat_history(db, history, scope)
+    stale_history_docs = sorted({
+        e.get("top_doc_id") for e in history
+        if e.get("top_doc_id") is not None and not e.get("top_chunk_text")
+    })
+
     coref = resolve_coreference(
         question, history,
         use_llm=use_llm_rewrite,
@@ -467,6 +575,7 @@ def ask(db: Session, question: str, mode: str = "hybrid",
     base = {
         "coreference": coref,
         "rewrite": rw,
+        "stale_history_docs": stale_history_docs,
         "retrieval": {
             "mode": ret["mode"],
             "fusion_mode": ret["fusion_mode"],
@@ -478,6 +587,8 @@ def ask(db: Session, question: str, mode: str = "hybrid",
             "vec_top1": ret["vec_top1"],
             "bm25_coverage": ret["bm25_coverage"],
             "bm25_coverage_min": ret["bm25_coverage_min"],
+            "doc_scope_count": ret["doc_scope_count"],
+            "dropped_stale": ret["dropped_stale"],
             "no_hit": ret["no_hit"],
             "degraded": ret["degraded"],
             "degrade_reason": ret["degrade_reason"],
@@ -499,8 +610,28 @@ def ask(db: Session, question: str, mode: str = "hybrid",
             "latency_ms": round(latency_ms, 1),
         }
 
-    # ---------- 3. 上下文裁剪 + 组装 Prompt ----------
+    # ---------- 3. 上下文裁剪 ----------
     used = _trim_context(hits)
+
+    # ---------- 3.1 云端请求前的最后核查（任务书 3.2） ----------
+    # 从检索到现在已经过了分词、向量化、融合、裁剪的时间，
+    # 文档可能恰好在此期间被修改或删除。此刻核对，避免把原文送去云端。
+    used = filter_stale_hits(db, used)
+    if not used:
+        latency_ms = (time.time() - started) * 1000
+        _save_qa_record(db, question, search_question, None, [], ret["fusion_mode"],
+                        None, latency_ms)
+        return {
+            **base,
+            "answer": None,
+            "answer_text": STALE_ANSWER_TEXT,
+            "references": [],
+            "llm": {"called": False, "ok": False, "error": "references_invalidated"},
+            "degraded": True,
+            "degrade_reason": "references_invalidated",
+            "latency_ms": round(latency_ms, 1),
+        }
+
     references = _pack_references(used, [])
     user_prompt = _build_user_prompt(question, used, rw.get("time_scope"), coref)
 
@@ -548,6 +679,28 @@ def ask(db: Session, question: str, mode: str = "hybrid",
     # ---------- 4. 引用溯源 ----------
     answer = (resp["content"] or "").strip()
     cited = _parse_citations(answer, len(used))
+
+    # 4.1 返回前再核查一次：云端请求已经发出无法撤回，但可以选择不把它当成有效回答。
+    #     只要依据的资料有一条失效，就整篇作废 —— 半新半旧的回答比没有回答更危险。
+    revalidated = filter_stale_hits(db, used)
+    if len(revalidated) != len(used):
+        latency_ms = (time.time() - started) * 1000
+        _save_qa_record(db, question, search_question, None, [], ret["fusion_mode"],
+                        resp["model"], latency_ms)
+        logger.warning("回答生成期间依据资料已变更，本次云端回答已作废")
+        return {
+            **base,
+            "answer": None,
+            "answer_text": STALE_ANSWER_TEXT,
+            "references": _pack_references(revalidated, []),
+            "cited_indexes": [],
+            "llm": {"called": True, "ok": False, "error": "references_invalidated",
+                    "model": resp["model"]},
+            "degraded": True,
+            "degrade_reason": "references_invalidated",
+            "latency_ms": round(latency_ms, 1),
+        }
+
     references = _pack_references(used, cited)
 
     latency_ms = (time.time() - started) * 1000

@@ -11,10 +11,16 @@
         </el-tag>
       </div>
       <div class="header-right">
-        <el-tag :type="ocrEngine.optimized ? 'success' : 'warning'" size="small" effect="dark">
+        <el-tag v-if="auth.demoMode && auth.authenticated" size="small" effect="dark">
+          {{ auth.role === 'admin' ? '管理员' : '演示访客' }}
+        </el-tag>
+        <el-button v-if="auth.demoMode && auth.authenticated" size="small" text style="color: #fff;" @click="signOut">
+          退出登录
+        </el-button>
+        <el-tag v-if="auth.authenticated" :type="ocrEngine.optimized ? 'success' : 'warning'" size="small" effect="dark">
           {{ ocrEngine.name || '引擎加载中...' }}
         </el-tag>
-        <el-button size="small" text style="color: #fff;" @click="showEngineInfo = true">
+        <el-button v-if="auth.authenticated" size="small" text style="color: #fff;" @click="showEngineInfo = true">
           <el-icon><InfoFilled /></el-icon> 引擎详情
         </el-button>
       </div>
@@ -25,22 +31,52 @@
          各页签的内容各自封装成组件，避免单文件膨胀到无法维护。
     -->
     <el-main class="app-main">
-      <el-tabs v-model="activeTab" class="main-tabs" @tab-change="onTabChange">
+      <div v-if="!auth.ready" class="auth-state">正在检查访问状态…</div>
+      <div v-else-if="auth.demoMode && !auth.authenticated" class="auth-state">
+        <el-card class="login-card" shadow="hover">
+          <h2>演示系统登录</h2>
+          <p>请输入演讲期间提供的临时口令。通过后可体验文档识别、统计和智能问答。</p>
+          <el-form @submit.prevent="signIn">
+            <el-form-item>
+              <el-input v-model="password" type="password" show-password
+                        autocomplete="current-password" placeholder="临时口令" @keyup.enter="signIn" />
+            </el-form-item>
+            <el-button type="primary" native-type="submit" :loading="signingIn" style="width: 100%;">
+              登录
+            </el-button>
+          </el-form>
+        </el-card>
+      </div>
+      <el-tabs v-else v-model="activeTab" class="main-tabs" @tab-change="onTabChange">
         <el-tab-pane name="docs" class="pane-scroll">
           <template #label>
             <span class="tab-label"><el-icon><Files /></el-icon> 文档管理</span>
           </template>
-          <DocManager ref="docManagerRef" />
+          <DocManager ref="docManagerRef" :is-admin="auth.role === 'admin'" />
         </el-tab-pane>
 
-        <el-tab-pane name="qa" class="pane-fit">
+        <el-tab-pane name="analytics" class="pane-scroll" lazy>
+          <template #label>
+            <span class="tab-label"><el-icon><DataAnalysis /></el-icon> 统计</span>
+          </template>
+          <AnalyticsPanel ref="analyticsRef" />
+        </el-tab-pane>
+
+        <el-tab-pane name="qa" class="pane-fit" lazy>
           <template #label>
             <span class="tab-label">
               <el-icon><MagicStick /></el-icon> 智能问答
               <el-tag size="small" type="success" effect="plain" class="tab-badge">RAG</el-tag>
             </span>
           </template>
-          <QaPanel ref="qaPanelRef" />
+          <QaPanel ref="qaPanelRef" :is-admin="auth.role === 'admin'" />
+        </el-tab-pane>
+
+        <el-tab-pane v-if="auth.role === 'admin'" name="data" class="pane-scroll" lazy>
+          <template #label>
+            <span class="tab-label"><el-icon><Coin /></el-icon> 数据管理</span>
+          </template>
+          <DataManager ref="dataManagerRef" />
         </el-tab-pane>
       </el-tabs>
     </el-main>
@@ -62,9 +98,9 @@
         <el-steps direction="vertical" :active="4" simple>
           <el-step title="基线模型" description="PaddleOCR lightweight 官方轻量预训练模型" />
           <el-step title="模型转换" description="Paddle2ONNX 转为通用 ONNX 推理格式" />
-          <el-step title="INT8 量化" description="浮点FP32 → 整型INT8，缩小模型体积" />
+          <el-step title="本地模型" description="OCR 使用本地 ONNX 模型，向量模型使用 INT8" />
           <el-step title="流水线优化" description="简化推理流水线，剔除冗余算子" />
-          <el-step title="性能对比" description="推理耗时降低30%+，精度下降<5%" />
+          <el-step title="实际性能" description="以当前机器、文档和测试记录为准" />
         </el-steps>
       </div>
     </el-dialog>
@@ -72,24 +108,88 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
-import { getHealth } from './api/index.js'
+import { ref, reactive, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
+import { ElMessage } from 'element-plus'
+import { getHealth, getAuthStatus, loginDemo, logoutDemo } from './api/index.js'
 import DocManager from './components/DocManager.vue'
-import QaPanel from './components/QaPanel.vue'
+const AnalyticsPanel = defineAsyncComponent(() => import('./components/AnalyticsPanel.vue'))
+const QaPanel = defineAsyncComponent(() => import('./components/QaPanel.vue'))
+const DataManager = defineAsyncComponent(() => import('./components/DataManager.vue'))
 
 // ==================== 页签 ====================
 const activeTab = ref('docs')
 const docManagerRef = ref(null)
+const analyticsRef = ref(null)
 const qaPanelRef = ref(null)
+const dataManagerRef = ref(null)
+const auth = reactive({ ready: false, demoMode: false, authenticated: false, role: null })
+const password = ref('')
+const signingIn = ref(false)
+
+function applyAuth(data) {
+  auth.demoMode = Boolean(data.demo_mode)
+  auth.authenticated = Boolean(data.authenticated)
+  auth.role = data.role || null
+  auth.ready = true
+  if (auth.role !== 'admin' && activeTab.value === 'data') activeTab.value = 'docs'
+}
+
+async function loadAuth() {
+  try {
+    const result = await getAuthStatus()
+    applyAuth(result.data)
+    if (auth.authenticated) fetchHealth()
+  } catch (e) {
+    auth.ready = true
+    auth.authenticated = false
+    ElMessage.error('无法确认登录状态，请检查本机服务')
+  }
+}
+
+async function signIn() {
+  if (!password.value || signingIn.value) return
+  signingIn.value = true
+  try {
+    const result = await loginDemo(password.value)
+    password.value = ''
+    applyAuth(result.data)
+    fetchHealth()
+  } catch (e) {
+    password.value = ''
+  } finally {
+    signingIn.value = false
+  }
+}
+
+async function signOut() {
+  try {
+    const result = await logoutDemo()
+    applyAuth(result.data)
+    activeTab.value = 'docs'
+  } catch (e) {
+    ElMessage.error('退出失败，请重试')
+  }
+}
+
+function authExpired() {
+  if (auth.demoMode) {
+    auth.authenticated = false
+    auth.role = null
+    activeTab.value = 'docs'
+  }
+}
 
 /**
- * 切页签时刷新对侧数据 —— 两侧存在真实的数据耦合：
+ * 切页签时刷新对侧数据 —— 各页签存在真实的数据耦合：
  *   · 在「文档管理」上传/识别了文档 → 问答侧需要知道有新文档待索引
  *   · 在「智能问答」建了索引        → 文档管理侧不需要变，但刷新无副作用
- * 不刷新会导致「刚传的文档检索不到」这种让人困惑的现象。
+ *   · 「统计」必须实时重算          → 编辑/删除/恢复后不保留旧统计缓存（任务书 3.4）
+ * 不刷新会导致「刚传的文档检索不到」「改了金额统计不变」这种让人困惑的现象。
  */
 function onTabChange(name) {
   if (name === 'qa') qaPanelRef.value?.refresh()
+  else if (name === 'analytics') analyticsRef.value?.refresh()
+  else if (name === 'data') dataManagerRef.value?.refresh()
   else docManagerRef.value?.refresh()
 }
 
@@ -111,8 +211,10 @@ async function fetchHealth() {
 }
 
 onMounted(() => {
-  fetchHealth()
+  window.addEventListener('doc-ocr-auth-expired', authExpired)
+  loadAuth()
 })
+onUnmounted(() => window.removeEventListener('doc-ocr-auth-expired', authExpired))
 </script>
 
 <style scoped>
@@ -175,6 +277,10 @@ onMounted(() => {
   padding: 12px 20px 16px;
   box-sizing: border-box;
 }
+.auth-state { flex: 1; display: flex; align-items: center; justify-content: center; color: #526781; }
+.login-card { width: min(440px, 100%); }
+.login-card h2 { margin: 0 0 12px; color: #19344f; }
+.login-card p { color: #526781; line-height: 1.6; margin-bottom: 24px; }
 
 /* ========== 页签 ==========
    把 el-tabs 也变成纵向弹性容器，页签内容区才能撑满剩余高度。

@@ -1,22 +1,27 @@
 """
 OCR 文字识别路由
 POST /api/ocr/recognize — 传入文档ID，执行图像预处理+OCR识别+字段抽取
+
+方案 B：
+- 识别闭环在 services/recognition.py（临时结果→原子发布版本，失败不动旧版本）
+- 识别成功后经 BackgroundTasks 自动建立/更新 RAG 索引（独立 Session，失败不影响主流程）
+- force=true 表示用户已在界面确认重新识别
 """
 import logging
-import numpy as np
-from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import DocumentInfo, DocumentExtract
+from app.models import DocumentInfo
 from app.schemas import ApiResponse
-from app.services.preprocess import load_image_from_path, preprocess_image
-from app.services.ocr_engine import recognize, get_engine_info
-from app.services.extractor import extract_fields
-from app.services.pdf_handler import pdf_to_images
+from app.services.ocr_engine import get_engine_info
+from app.services.recognition import (
+    RecognitionError, record_attempt_failure, run_recognition,
+)
+from app.services.pdf_handler import PdfError
+from app.services.backup_gate import BackupInProgress
 
 router = APIRouter(prefix="/api/ocr", tags=["OCR识别"])
 logger = logging.getLogger(__name__)
@@ -24,127 +29,54 @@ logger = logging.getLogger(__name__)
 
 class OcrRequest(BaseModel):
     doc_id: int
+    force: bool = False  # 已有有效版本时必须为 true（界面已确认重新识别）
 
 
 @router.post("/recognize", response_model=ApiResponse)
-def recognize_document(req: OcrRequest, db: Session = Depends(get_db)):
-    """
-    执行文档 OCR 识别接口
-    流程: 加载文件 → 图像预处理 → 轻量化OCR推理 → 文本字段抽取 → 存入数据库
-    """
-    # 1. 查询文档记录
+def recognize_document(req: OcrRequest, background: BackgroundTasks,
+                       db: Session = Depends(get_db)):
+    """执行文档 OCR 识别（原子版本发布；成功自动触发后台索引）"""
     doc = db.query(DocumentInfo).filter(DocumentInfo.id == req.doc_id).first()
     if not doc:
         return ApiResponse.error(msg=f"文档不存在: ID={req.doc_id}", code=404)
-
-    # 2. 检查文件是否存在
-    file_path = Path(doc.file_path)
-    if not file_path.exists():
-        doc.status = 2
-        doc.error_msg = "原始文件不存在"
-        db.commit()
-        return ApiResponse.error(msg="原始文件不存在", code=404)
+    if doc.deleted_at is not None:
+        return ApiResponse.error(msg="文档在回收站中，请先恢复再识别", code=400)
 
     try:
-        logger.info(f"=== 开始识别文档 ID={doc.id} 文件={doc.file_name} ===")
+        result = run_recognition(db, doc, force=req.force)
+    except BackupInProgress as e:
+        record_attempt_failure(db, doc, str(e))
+        return ApiResponse.error(msg=str(e), code=409)
+    except PdfError as e:
+        record_attempt_failure(db, doc, str(e))
+        return ApiResponse.error(msg=str(e), code=400)
+    except RecognitionError as e:
+        record_attempt_failure(db, doc, str(e))
+        return ApiResponse.error(msg=str(e), code=e.code)
 
-        all_text_lines = []
-        total_infer_cost = 0.0
+    # 识别成功 → 后台自动建索引（独立 Session；失败只影响索引状态，不影响本次识别结果）
+    from app.services.rag_indexer import index_document_background
+    background.add_task(index_document_background, doc.id)
 
-        if doc.file_type == "pdf":
-            # PDF: 逐页渲染为图像后识别
-            images = pdf_to_images(str(file_path))
-            if not images:
-                raise ValueError("PDF 解析失败，未获取到页面图像")
-
-            for i, img in enumerate(images):
-                logger.info(f"--- 处理 PDF 第 {i+1}/{len(images)} 页 ---")
-                # 图像预处理
-                processed = preprocess_image(img)
-                # OCR 识别
-                text, cost, _ = recognize(processed)
-                all_text_lines.append(f"=== 第 {i+1} 页 ===\n{text}")
-                total_infer_cost += cost
-        else:
-            # 图片: 直接加载识别
-            img = load_image_from_path(str(file_path))
-            # 图像预处理（轻量化优化核心）
-            processed = preprocess_image(img)
-            # OCR 识别
-            text, cost, _ = recognize(processed)
-            all_text_lines.append(text)
-            total_infer_cost = cost
-
-        # 3. 拼接完整识别文本
-        full_text = "\n".join(all_text_lines)
-        logger.info(f"识别完成，文本长度={len(full_text)}，推理耗时={total_infer_cost:.2f}ms")
-
-        # 4. 文本结构化字段抽取
-        fields = extract_fields(full_text)
-
-        # 5. 清除旧的抽取记录（如有）
-        db.query(DocumentExtract).filter(DocumentExtract.doc_id == doc.id).delete()
-
-        # 6. 保存抽取字段
-        for field in fields:
-            extract = DocumentExtract(
-                doc_id=doc.id,
-                field_name=field["field_name"],
-                field_value=field["field_value"],
-            )
-            db.add(extract)
-
-        # 7. 更新文档主表
-        doc.ocr_raw_text = full_text
-        doc.infer_cost = round(total_infer_cost, 2)
-        doc.status = 1  # 识别成功
-        doc.error_msg = None
-        db.commit()
-        db.refresh(doc)
-
-        # 8. 构建响应
-        from app.schemas import ExtractFieldOut
-        extract_list = [
-            ExtractFieldOut(id=e.id, doc_id=e.doc_id, field_name=e.field_name, field_value=e.field_value)
-            for e in doc.extracts
-        ]
-
-        # 如实标注引擎模式。
-        # 背景：RapidOCR 加载失败时会降级为 Mock 引擎，返回的是**占位假文本**，
-        # 但流程本身没出错 —— 旧实现一律回 "OCR识别成功"，于是文档列表和导出的
-        # Excel 里都记成「识别成功」，只看列表根本察觉不到。
-        # 顶栏虽然会显示「模拟引擎 (Mock)」warning 标签，但那是全局状态、
-        # 且导出成 Excel 后就完全丢失了上下文。
-        engine_info = get_engine_info()
-        is_mock = not engine_info.get("optimized", True)
-        msg = (
-            "OCR识别完成（当前为模拟引擎 Mock，以上文本为占位内容，非真实识别结果）"
-            if is_mock else "OCR识别成功"
-        )
-        if is_mock:
-            logger.warning(
-                f"文档 ID={doc.id} 由 Mock 引擎处理，结果为占位文本（RapidOCR 未加载成功）"
-            )
-
-        return ApiResponse.success(
-            data={
-                "doc_id": doc.id,
-                "status": doc.status,
-                "ocr_raw_text": doc.ocr_raw_text,
-                "infer_cost": doc.infer_cost,
-                "engine_optimized": engine_info.get("optimized", True),
-                "engine_name": engine_info.get("name"),
-                "extracts": [e.model_dump() for e in extract_list],
-            },
-            msg=msg,
-        )
-
-    except Exception as e:
-        logger.error(f"OCR识别失败: {e}", exc_info=True)
-        doc.status = 2
-        doc.error_msg = str(e)[:500]
-        db.commit()
-        return ApiResponse.error(msg=f"OCR识别失败: {str(e)}", code=500)
+    engine_info = get_engine_info()
+    return ApiResponse.success(
+        data={
+            "doc_id": result["doc_id"],
+            "status": result["status"],
+            "revision": result["revision"],
+            "doc_type": result["doc_type"],
+            "ocr_raw_text": result["ocr_raw_text"],
+            "infer_cost": result["infer_cost"],
+            "engine_type": engine_info.get("engine_type"),
+            "engine_name": engine_info.get("name"),
+            "extracts": [
+                {"field_key": f["field_key"], "field_name": f["field_name"],
+                 "field_value": f["field_value"], "field_value_raw": f["field_value_raw"]}
+                for f in result["fields"]
+            ],
+        },
+        msg="OCR识别成功",
+    )
 
 
 @router.get("/engine-info", response_model=ApiResponse)

@@ -1,15 +1,21 @@
 """
 文档文件上传路由
-POST /api/file/upload — 接收图片/PDF文件，返回文件存储信息
+POST /api/file/upload         — 接收图片/PDF文件，返回文件存储信息
+GET  /api/file/preview/{id}   — 按文档ID访问原件（禁止客户端传路径）
+
+方案 B：流式 SHA-256 内容去重（duplicate/existing_doc_id/in_recycle_bin）、
+写入门禁（备份期间拒写）、分块落盘保持不变。
 """
+import mimetypes
 import os
 import uuid
 import logging
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import APIRouter, UploadFile, File, Depends
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, UploadFile, File, Depends, Request
+from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy.orm import Session
 
 from app.config import (
@@ -18,6 +24,8 @@ from app.config import (
 from app.database import get_db
 from app.models import DocumentInfo
 from app.schemas import ApiResponse, UploadResponse
+from app.services import file_hash
+from app.services.backup_gate import GATE, BackupInProgress
 
 router = APIRouter(prefix="/api/file", tags=["文件上传"])
 logger = logging.getLogger(__name__)
@@ -45,6 +53,12 @@ def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
     N 个大上传会**叠加**占用内存，所以这里必须改成分块累计 + 超限即中止。
     （前置拦截见 app/main.py 的 limit_upload_size 中间件。）
     """
+    # 0. 备份期间拒绝新上传（门禁；在途上传允许完成，见 backup_gate 设计）
+    try:
+        GATE.abort_if_closed("上传")
+    except BackupInProgress as e:
+        return ApiResponse.error(msg=str(e), code=409)
+
     # 1. 文件格式校验
     original_name = file.filename or "unknown"
     ext = Path(original_name).suffix.lower()
@@ -54,7 +68,7 @@ def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
             code=400,
         )
 
-    # 2. 生成唯一文件名，边读边写边累计字节数
+    # 2. 生成唯一文件名，边读边写边累计字节数与内容哈希
     #    同步读：本路由是 def，FastAPI 会把它放进线程池执行，
     #    这里用 UploadFile.file（底层 SpooledTemporaryFile）而不是 await file.read()。
     unique_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{ext}"
@@ -62,6 +76,7 @@ def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
 
     written = 0
     exceeded = False
+    hasher = file_hash.new_hasher()
     try:
         with open(save_path, "wb") as f:
             while True:
@@ -74,10 +89,11 @@ def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
                     exceeded = True
                     break
                 f.write(chunk)
+                hasher.update(chunk)
     except Exception as e:
         _safe_unlink(save_path)
         logger.error(f"文件保存失败: {e}")
-        return ApiResponse.error(msg=f"文件保存失败: {str(e)}", code=500)
+        return ApiResponse.error(msg="文件保存失败，请检查磁盘后重试", code=500)
 
     if exceeded:
         _safe_unlink(save_path)
@@ -99,28 +115,111 @@ def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
         _safe_unlink(save_path)
         return ApiResponse.error(msg="文件内容为空，可能已损坏", code=400)
 
+    digest = hasher.hexdigest()
+
+    # 3. 内容去重：完全相同内容默认不新增（互斥窗口内 查→决→插）
+    #    命中正常文档 → 返回已有文档信息；命中回收站 → 提示恢复；都不产生新记录假象
+    with file_hash.dedup_lock():
+        existing = file_hash.find_by_hash(db, digest)
+        if existing is not None:
+            _safe_unlink(save_path)
+            in_bin = existing.deleted_at is not None
+            logger.info(
+                f"内容重复上传：{original_name} → 已有 doc#{existing.id}"
+                f"（{'回收站' if in_bin else '正常'}）")
+            return ApiResponse.success(
+                data={
+                    "duplicate": True,
+                    "existing_doc_id": existing.id,
+                    "doc_id": existing.id,
+                    "in_recycle_bin": in_bin,
+                    "file_name": existing.file_name,
+                    "file_type": existing.file_type,
+                },
+                msg=("内容完全相同的文档已在回收站，可前往恢复"
+                     if in_bin else "内容完全相同的文档已存在，未重复创建"),
+            )
+
+        # 4. 写入数据库（写入门禁临界区）
+        file_type = "pdf" if ext == ".pdf" else "image"
+        doc = DocumentInfo(
+            file_name=original_name,
+            file_path=str(save_path),
+            file_type=file_type,
+            status=0,  # 待识别
+            file_sha256=digest,
+        )
+        try:
+            with GATE.write_section("上传建档"):
+                db.add(doc)
+                db.commit()
+        except BackupInProgress as e:
+            _safe_unlink(save_path)
+            return ApiResponse.error(msg=str(e), code=409)
+        db.refresh(doc)
+
     logger.info(f"文件保存成功: {save_path}（{written} 字节）")
 
-    # 3. 判断文件类型
-    file_type = "pdf" if ext == ".pdf" else "image"
-
-    # 4. 写入数据库
-    doc = DocumentInfo(
-        file_name=original_name,
-        file_path=str(save_path),
-        file_type=file_type,
-        status=0,  # 待识别
-    )
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
-
     return ApiResponse.success(
-        data=UploadResponse(
-            doc_id=doc.id,
-            file_name=doc.file_name,
-            file_type=doc.file_type,
-            file_path=doc.file_path,
-        ).model_dump(),
+        data={
+            **UploadResponse(
+                doc_id=doc.id,
+                file_name=doc.file_name,
+                file_type=doc.file_type,
+                file_path=doc.file_path,
+            ).model_dump(),
+            "duplicate": False,
+            "existing_doc_id": None,
+            "in_recycle_bin": False,
+        },
         msg="文件上传成功",
+    )
+
+
+@router.get("/preview/{doc_id}", response_model=None)
+def preview_file(doc_id: int, request: Request, download: bool = False,
+                 db: Session = Depends(get_db)):
+    """
+    按文档ID访问原件（图片直接显示、PDF 走浏览器原生预览/翻页）。
+
+    安全约束（任务书 3.3/接口表）：
+      - **只接受文档ID**，不接受客户端文件路径 —— 路径来自数据库，客户端无从构造
+      - 路径 resolve 后必须落在 UPLOAD_DIR 内，越界一律拒绝（防目录穿越与误删）
+      - 原件缺失明确 404 报错，不返回假成功、不返回空文件替代
+
+    参数: download=true 时以附件下载（浏览器不能内嵌预览时的兜底入口）
+    """
+    doc = db.query(DocumentInfo).filter(DocumentInfo.id == doc_id).first()
+    if not doc or (doc.deleted_at is not None and
+                   getattr(request.state, "demo_role", "admin") == "guest"):
+        return ApiResponse.error(msg=f"文档不存在: ID={doc_id}", code=404)
+
+    try:
+        fp = Path(doc.file_path).resolve()
+        root = Path(UPLOAD_DIR).resolve()
+    except Exception as e:
+        logger.warning(f"文档 {doc_id} 原件路径非法: {e}")
+        return ApiResponse.error(msg="原件路径无效，已拒绝访问", code=400)
+
+    if not (fp == root or root in fp.parents):
+        logger.warning(f"文档 {doc_id} 原件路径越界被拒: {fp}")
+        return ApiResponse.error(
+            msg="原件路径不在本应用存储目录内，已拒绝访问（疑似异常数据）", code=400)
+
+    if not fp.exists():
+        # 缺件必须说清楚：这是 P1/T02「缺失原件明确报错，不伪成功」的要求
+        return ApiResponse.error(
+            msg=f"原件缺失：{doc.file_name}（文件已不存在，请重新上传或清理该记录）",
+            code=404,
+        )
+
+    media = mimetypes.guess_type(fp.name)[0]
+    if not media:
+        media = "application/pdf" if fp.suffix.lower() == ".pdf" else "application/octet-stream"
+
+    disposition = "attachment" if download else "inline"
+    return FileResponse(
+        str(fp),
+        media_type=media,
+        headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(doc.file_name)}"},
     )

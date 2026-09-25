@@ -170,21 +170,31 @@ def recognize(img: np.ndarray) -> Tuple[str, float, List]:
         return _recognize_mock(img)
 
 
+def get_engine_type() -> str:
+    """当前引擎类型（rapidocr/tesseract/mock）——判断真假 OCR 必须用它，
+    不能用 optimized 标志（tesseract 也是真实引擎但 optimized=False）。"""
+    engine_type, _ = get_ocr_engine()
+    return engine_type
+
+
 def get_engine_info() -> dict:
-    """获取当前 OCR 引擎信息（用于前端展示）"""
+    """获取当前 OCR 引擎信息（用于前端展示）。engine_type 为显式引擎标识。"""
     engine_type, _ = get_ocr_engine()
     info_map = {
         "rapidocr": {
+            "engine_type": "rapidocr",
             "name": "RapidOCR (ONNX Runtime)",
             "description": "PaddleOCR 轻量化模型 → ONNX 格式 → INT8 量化推理",
             "optimized": True,
         },
         "tesseract": {
+            "engine_type": "tesseract",
             "name": "Tesseract OCR",
             "description": "Tesseract 开源OCR引擎",
             "optimized": False,
         },
         "mock": {
+            "engine_type": "mock",
             "name": "模拟引擎 (Mock)",
             "description": "OCR引擎未安装，运行模拟模式",
             "optimized": False,

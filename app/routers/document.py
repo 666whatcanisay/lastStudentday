@@ -1,39 +1,127 @@
 """
 文档管理路由
-  GET    /api/document/stats      获取文档统计数据（总数、成功数、平均推理耗时）
-  GET    /api/document/list       分页获取文档列表，支持关键字检索
-  GET    /api/document/{doc_id}   获取单份文档详情
-  GET    /api/document/export     批量导出文档识别数据 Excel
-  DELETE /api/document/{doc_id}   删除文档及关联抽取字段
+  GET    /api/document/stats                      简单统计（保留兼容，正式统计见 /analytics）
+  GET    /api/document/analytics                  分类统计（唯一口径，图表数据源）
+  GET    /api/document/analytics/details          统计明细穿透（与图表同过滤）
+  GET    /api/document/list                       分页列表（摘要，支持类型/校对/回收站过滤）
+  GET    /api/document/export                     导出 Excel（按类型分工作表）
+  GET    /api/document/export/report              单份 PDF 识别结果报告（可附原件）
+  GET    /api/document/export/reports             批量 PDF 报告 ZIP（含 manifest）
+  GET    /api/document/{doc_id}                   详情（原始/有效文本、类型字段、版本、预览 URL）
+  PATCH  /api/document/{doc_id}                   编辑（乐观并发 409 + 版本发布）
+  GET    /api/document/{doc_id}/revisions         版本历史摘要
+  GET    /api/document/{doc_id}/revisions/{rev}   只读版本快照
+  DELETE /api/document/{doc_id}                   软删除（进回收站）
+  POST   /api/document/{doc_id}/restore           从回收站恢复
+  DELETE /api/document/{doc_id}/permanent         永久删除（仅回收站条目）
+
+⚠️ 路由顺序：固定路径必须在 /{doc_id} 动态路径之前注册（FastAPI 按声明顺序匹配）。
 """
 import io
 import logging
-from typing import Optional, List
+import shutil
+import tempfile
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 
+from app.config import UPLOAD_DIR
 from app.database import get_db
 from app.models import DocumentInfo, DocumentExtract
-from app.schemas import ApiResponse, DocumentOut, ExtractFieldOut
+from app.schemas import (
+    ApiResponse, ExtractFieldOut, DocumentListItemOut, RevisionSummaryOut,
+    DocumentPatchRequest,
+)
+from app.services import revisions as rev_svc
+from app.services import field_registry as registry
+from app.services.extractor import extract_for_type
+from app.services import analytics
+from app.services import exporter
+from app.services.backup_gate import GATE, BackupInProgress
 
 router = APIRouter(prefix="/api/document", tags=["文档管理"])
 logger = logging.getLogger(__name__)
 
+# 切换类型时跨类型保留的公共字段键（如币种）：它们与单据类型无关，
+# 重新抽取很可能抽不出来（币种是全文推断），丢了就要用户重填，属于无谓损失。
+PUBLIC_FIELD_KEYS = {"currency"}
+
+
+# ==================== 序列化辅助 ====================
+
+def _extract_outs(doc: DocumentInfo) -> List[ExtractFieldOut]:
+    return [
+        ExtractFieldOut(id=e.id, doc_id=e.doc_id, field_name=e.field_name,
+                        field_value=e.field_value, field_key=e.field_key)
+        for e in doc.extracts
+    ]
+
+
+def _list_item(doc: DocumentInfo) -> dict:
+    item = DocumentListItemOut(
+        id=doc.id,
+        file_name=doc.file_name,
+        file_type=doc.file_type,
+        upload_time=doc.upload_time,
+        doc_type=doc.doc_type or "other",
+        status=doc.status,
+        error_msg=doc.error_msg,
+        infer_cost=doc.infer_cost,
+        current_revision=doc.current_revision,
+        reviewed=rev_svc.is_reviewed(doc),
+        deleted_at=doc.deleted_at,
+        engine_type=doc.engine_type,
+        last_attempt_status=doc.last_attempt_status,
+        last_attempt_error=doc.last_attempt_error,
+        index_status=doc.index_state.status if doc.index_state else None,
+        indexed_revision=doc.index_state.indexed_revision if doc.index_state else None,
+        extracts=_extract_outs(doc),
+    )
+    return item.model_dump()
+
+
+def _detail_dict(doc: DocumentInfo, db: Session) -> dict:
+    """详情：原始/有效文本分离，版本与状态齐全，原件只给相对 URL（不给绝对路径）"""
+    snap = rev_svc.get_effective_snapshot(db, doc.id)
+    return {
+        "id": doc.id,
+        "file_name": doc.file_name,
+        "file_type": doc.file_type,
+        "upload_time": doc.upload_time.isoformat() if doc.upload_time else None,
+        "doc_type": doc.doc_type or "other",
+        "status": doc.status,
+        "error_msg": doc.error_msg,
+        "infer_cost": doc.infer_cost,
+        "ocr_raw_text": doc.ocr_raw_text,
+        "effective_text": snap.effective_text if snap else None,
+        "current_revision": doc.current_revision,
+        "reviewed": rev_svc.is_reviewed(doc),
+        "deleted_at": doc.deleted_at.isoformat() if doc.deleted_at else None,
+        "engine_type": doc.engine_type,
+        "last_attempt_status": doc.last_attempt_status,
+        "last_attempt_error": doc.last_attempt_error,
+        "index_status": doc.index_state.status if doc.index_state else None,
+        "indexed_revision": doc.index_state.indexed_revision if doc.index_state else None,
+        "preview_url": f"/api/file/preview/{doc.id}",
+        "extracts": [e.model_dump() for e in _extract_outs(doc)],
+    }
+
+
+# ==================== 固定路由（必须先于 /{doc_id}） ====================
 
 @router.get("/stats", response_model=ApiResponse)
 def get_document_stats(db: Session = Depends(get_db)):
-    """
-    获取文档统计数据接口
-    - 文档总数
-    - 识别成功数
-    - 平均推理耗时(ms)
-    """
-    total = db.query(func.count(DocumentInfo.id)).scalar() or 0
-    success_count = db.query(func.count(DocumentInfo.id)).filter(DocumentInfo.status == 1).scalar() or 0
+    """简单统计（保留兼容）：总数/成功数/平均耗时；排除回收站。"""
+    base = db.query(DocumentInfo).filter(DocumentInfo.deleted_at.is_(None))
+    total = base.count()
+    success_count = base.filter(DocumentInfo.status == 1).count()
     avg_cost = db.query(func.avg(DocumentInfo.infer_cost)).filter(
+        DocumentInfo.deleted_at.is_(None),
         DocumentInfo.status == 1, DocumentInfo.infer_cost != None
     ).scalar()
     avg_cost = round(avg_cost, 1) if avg_cost else 0.0
@@ -45,19 +133,124 @@ def get_document_stats(db: Session = Depends(get_db)):
     })
 
 
+@router.get("/analytics", response_model=ApiResponse)
+def get_document_analytics(
+    doc_type: Optional[str] = Query(None, description="类型：invoice/contract/other"),
+    date_from: Optional[str] = Query(None, description="业务日期起（YYYY-MM-DD，含当天）"),
+    date_to: Optional[str] = Query(None, description="业务日期止（YYYY-MM-DD，含当天）"),
+    date_unknown: Optional[bool] = Query(None, description="true=只看日期未知；false=排除日期未知"),
+    currency: Optional[str] = Query(None, description="币种 ISO 代码（CNY/USD…），或 UNKNOWN=只看币种缺失"),
+    reviewed: Optional[bool] = Query(None, description="校对状态过滤"),
+    party_role: Optional[str] = Query(None,
+                                      description="排行角色（一次一个）：buyer/seller/party_a/party_b"),
+    db: Session = Depends(get_db),
+):
+    """
+    分类统计（任务书 3.4 唯一口径）。
+
+    与明细穿透 `/analytics/details` 共用 `analytics.apply_filters`，
+    保证「图与明细同口径」。金额一律为十进制字符串，前端只展示不重算。
+    """
+    import re
+    if doc_type and doc_type not in registry.DOC_TYPES:
+        return ApiResponse.error(
+            msg=f"不支持的文档类型: {doc_type}（可选 {', '.join(registry.DOC_TYPES)}）", code=400)
+    for name, val in (("date_from", date_from), ("date_to", date_to)):
+        if val and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", val.strip()):
+            return ApiResponse.error(msg=f"{name} 需为 YYYY-MM-DD 格式: {val}", code=400)
+
+    filters = {
+        "doc_type": doc_type,
+        "date_from": date_from,
+        "date_to": date_to,
+        "date_unknown": date_unknown,
+        "currency": (currency or "").strip().upper() or None,
+        "reviewed": reviewed,
+    }
+    docs = analytics.apply_filters(analytics.load_valid_docs(db), **filters)
+    data = analytics.build_analytics(docs, filters=filters, party_role=party_role)
+    return ApiResponse.success(data=data)
+
+
+@router.get("/analytics/details", response_model=ApiResponse)
+def get_document_analytics_details(
+    doc_type: Optional[str] = Query(None, description="类型：invoice/contract/other"),
+    date_from: Optional[str] = Query(None, description="业务日期起（含当天）"),
+    date_to: Optional[str] = Query(None, description="业务日期止（含当天）"),
+    date_unknown: Optional[bool] = Query(None),
+    currency: Optional[str] = Query(None),
+    reviewed: Optional[bool] = Query(None),
+    party_role: Optional[str] = Query(None, description="排行角色，用于点某个交易对象"),
+    party: Optional[str] = Query(None, description="交易对象名称（配合 party_role）"),
+    month: Optional[str] = Query(None, description="月度分组键 2026-01，或 unknown"),
+    require_amount: bool = Query(False, description="true=只要金额与币种都有效的文档（金额图穿透）"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    """
+    统计明细穿透：与图表**同一套过滤条件**，可再叠加 month/party/require_amount。
+
+    amount_totals 按币种分组给出明细合计 —— 点击金额图时应与图上数字一致。
+    """
+    import re
+    if doc_type and doc_type not in registry.DOC_TYPES:
+        return ApiResponse.error(
+            msg=f"不支持的文档类型: {doc_type}（可选 {', '.join(registry.DOC_TYPES)}）", code=400)
+    for name, val in (("date_from", date_from), ("date_to", date_to)):
+        if val and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", val.strip()):
+            return ApiResponse.error(msg=f"{name} 需为 YYYY-MM-DD 格式: {val}", code=400)
+
+    docs = analytics.apply_filters(
+        analytics.load_valid_docs(db),
+        doc_type=doc_type, date_from=date_from, date_to=date_to,
+        date_unknown=date_unknown,
+        currency=(currency or "").strip().upper() or None,
+        reviewed=reviewed, month=month, require_amount=require_amount,
+        party_role=party_role, party=party,
+    )
+    data = analytics.build_details(docs, page=page, page_size=page_size,
+                                   party_role=party_role)
+    return ApiResponse.success(data=data)
+
+
 @router.get("/list", response_model=ApiResponse)
 def get_document_list(
     keyword: Optional[str] = Query(None, description="搜索关键字（文件名或识别文本）"),
+    doc_type: Optional[str] = Query(None, description="类型过滤：invoice/contract/other"),
+    reviewed: Optional[bool] = Query(None, description="校对状态过滤"),
+    in_recycle_bin: bool = Query(False, description="true=看回收站；false=正常列表"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(10, ge=1, le=100, description="每页条数"),
     db: Session = Depends(get_db),
 ):
     """
-    分页获取全部文档列表接口
-    - 支持按文件名、识别文本关键字模糊检索
-    - 按上传时间倒序排列
+    分页文档列表（摘要视图：不含全文与绝对路径）。
+    回收站与正常列表互斥；日期/币种等统计过滤见 /analytics（P3）。
     """
     query = db.query(DocumentInfo)
+
+    if in_recycle_bin:
+        query = query.filter(DocumentInfo.deleted_at.isnot(None))
+    else:
+        query = query.filter(DocumentInfo.deleted_at.is_(None))
+
+    if doc_type:
+        query = query.filter(DocumentInfo.doc_type == doc_type)
+
+    if reviewed is True:
+        query = query.filter(
+            DocumentInfo.current_revision.isnot(None),
+            DocumentInfo.reviewed_revision == DocumentInfo.current_revision,
+        )
+    elif reviewed is False:
+        query = query.filter(
+            or_(
+                DocumentInfo.current_revision.is_(None),
+                DocumentInfo.reviewed_revision.is_(None),
+                DocumentInfo.reviewed_revision != DocumentInfo.current_revision,
+            )
+        )
 
     if keyword:
         query = query.filter(
@@ -67,10 +260,7 @@ def get_document_list(
             )
         )
 
-    # 总数
     total = query.count()
-
-    # 分页查询（按上传时间倒序）
     docs = (
         query.order_by(DocumentInfo.upload_time.desc())
         .offset((page - 1) * page_size)
@@ -78,35 +268,76 @@ def get_document_list(
         .all()
     )
 
-    items = []
-    for doc in docs:
-        extracts = [
-            ExtractFieldOut(id=e.id, doc_id=e.doc_id, field_name=e.field_name, field_value=e.field_value)
-            for e in doc.extracts
-        ]
-        items.append(
-            DocumentOut(
-                id=doc.id,
-                file_name=doc.file_name,
-                file_path=doc.file_path,
-                file_type=doc.file_type,
-                upload_time=doc.upload_time,
-                ocr_raw_text=doc.ocr_raw_text,
-                infer_cost=doc.infer_cost,
-                status=doc.status,
-                error_msg=doc.error_msg,
-                extracts=extracts,
-            )
-        )
+    return ApiResponse.success(data={
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [_list_item(d) for d in docs],
+    })
 
-    return ApiResponse.success(
-        data={
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "items": [item.model_dump() for item in items],
-        }
-    )
+
+# ==================== 导出（Excel / PDF 报告 / 批量 ZIP） ====================
+
+def _parse_doc_ids(doc_ids: str) -> List[int]:
+    ids = []
+    for x in (doc_ids or "").split(","):
+        x = x.strip()
+        if x.isdigit():
+            ids.append(int(x))
+    return ids
+
+
+def _prepare_export_items(db: Session, doc_ids: List[int]) -> List[Dict]:
+    """
+    请求开始时空一次性锁定每份文档的**有效版本快照**。
+
+    这是「正文和字段不能在生成途中混用不同版本」的实现方式：
+    快照在这里取出来，后续 PDF/Excel 只读这份内存数据，不再回查数据库。
+    """
+    items: List[Dict] = []
+    for did in doc_ids:
+        doc = db.query(DocumentInfo).filter(DocumentInfo.id == did).first()
+        entry: Dict = {"doc_id": did, "doc": doc}
+        if not doc:
+            entry["error"] = "文档不存在"
+        elif doc.deleted_at is not None:
+            entry["error"] = "文档在回收站，不可导出"
+        else:
+            snap = rev_svc.get_effective_snapshot(db, doc.id)
+            if not snap:
+                entry["error"] = "该文档没有有效版本，无法导出"
+            else:
+                entry["snap"] = snap
+                entry["fields"] = rev_svc.snapshot_fields(snap)
+        items.append(entry)
+    return items
+
+
+def _export_rows(items: List[Dict]) -> List[Dict]:
+    """导出项 → Excel 行（同样只吃锁定的快照）"""
+    rows = []
+    for it in items:
+        if it.get("error") or not it.get("snap"):
+            continue
+        doc, snap = it["doc"], it["snap"]
+        rows.append({
+            "doc_id": doc.id,
+            "file_name": doc.file_name,
+            "file_type": doc.file_type,
+            "upload_time": doc.upload_time,
+            "doc_type": snap.doc_type or "other",
+            "revision": snap.revision,
+            "reviewed": bool(doc.current_revision is not None
+                             and doc.reviewed_revision == doc.current_revision),
+            "fields": it["fields"],
+            "effective_text": snap.effective_text,
+        })
+    return rows
+
+
+def _attachment(filename: str):
+    from urllib.parse import quote
+    return f"attachment; filename*=UTF-8''{quote(filename)}"
 
 
 @router.get("/export", response_model=None)
@@ -115,128 +346,462 @@ def export_documents(
     db: Session = Depends(get_db),
 ):
     """
-    批量导出文档识别数据 Excel 接口
-    导出内容：文件名、上传时间、识别状态、推理耗时、原始识别文本、单据编号、日期、金额
+    导出 Excel：按类型分工作表（发票/合同/其他，按需生成），
+    金额为数值单元格、币种独立列，文本按字符串写入（防公式注入）。
     """
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, Alignment, PatternFill
-
-    # 解析文档ID列表
-    id_list = [int(x.strip()) for x in doc_ids.split(",") if x.strip().isdigit()]
+    id_list = _parse_doc_ids(doc_ids)
     if not id_list:
         return ApiResponse.error(msg="请提供有效的文档ID", code=400)
 
-    docs = db.query(DocumentInfo).filter(DocumentInfo.id.in_(id_list)).all()
+    items = _prepare_export_items(db, id_list)
+    rows = _export_rows(items)
+    if not rows:
+        failed = "；".join(f"{i['doc_id']}: {i['error']}" for i in items if i.get("error"))
+        return ApiResponse.error(msg=f"没有可导出的有效文档（{failed or '无有效版本'}）", code=400)
 
-    # 创建 Excel 工作簿
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "文档识别结果"
-
-    # 表头样式
-    header_font = Font(bold=True, color="FFFFFF", size=11)
-    header_fill = PatternFill(start_color="409EFF", end_color="409EFF", fill_type="solid")
-    header_align = Alignment(horizontal="center", vertical="center")
-
-    # 写入表头
-    headers = ["序号", "文件名", "文件类型", "上传时间", "识别状态", "推理耗时(ms)", "单据编号", "日期", "金额", "原始识别文本"]
-    for col, header in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col, value=header)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = header_align
-
-    # 状态映射
-    status_map = {0: "待识别", 1: "识别成功", 2: "识别失败"}
-
-    # 写入数据
-    for idx, doc in enumerate(docs, 1):
-        # 提取结构化字段
-        field_map = {e.field_name: e.field_value for e in doc.extracts}
-        row_data = [
-            idx,
-            doc.file_name,
-            doc.file_type,
-            doc.upload_time.strftime("%Y-%m-%d %H:%M:%S") if doc.upload_time else "",
-            status_map.get(doc.status, "未知"),
-            doc.infer_cost if doc.infer_cost else "",
-            field_map.get("单据编号", ""),
-            field_map.get("日期", ""),
-            field_map.get("金额", ""),
-            doc.ocr_raw_text or "",
-        ]
-        for col, value in enumerate(row_data, 1):
-            ws.cell(row=idx + 1, column=col, value=value)
-
-    # 设置列宽
-    col_widths = [6, 25, 10, 20, 10, 14, 20, 15, 15, 60]
-    for i, width in enumerate(col_widths, 1):
-        ws.column_dimensions[chr(64 + i) if i <= 26 else "A"].width = width
-
-    # 导出到内存
-    output = io.BytesIO()
-    wb.save(output)
-    output.seek(0)
-
-    # URL 编码中文文件名
-    from urllib.parse import quote
-    filename = f"文档识别结果导出_{len(docs)}条.xlsx"
-    encoded_filename = quote(filename)
+    data = exporter.build_excel_workbook(rows=rows)
     return StreamingResponse(
-        output,
+        io.BytesIO(data),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
+        headers={"Content-Disposition": _attachment(f"文档识别结果导出_{len(rows)}条.xlsx")},
     )
 
 
+@router.get("/export/report", response_model=None)
+def export_single_report(
+    doc_id: int = Query(..., description="文档ID"),
+    attach_original: bool = Query(False, description="是否附加原件（缺失则该份导出失败）"),
+    background: BackgroundTasks = None,
+    db: Session = Depends(get_db),
+):
+    """单份 PDF 识别结果报告（A4，含字段/有效全文/版本/页码，可选附原件）"""
+    items = _prepare_export_items(db, [doc_id])
+    it = items[0]
+    if it.get("error"):
+        return ApiResponse.error(msg=it["error"], code=400)
+
+    work_root = exporter.make_work_root()
+    tmp_dir = Path(tempfile.mkdtemp(prefix=exporter.EXPORT_PREFIX, dir=str(work_root)))
+    try:
+        data = exporter.build_report_pdf(
+            doc=it["doc"], snap=it["snap"], fields=it["fields"],
+            attach_original=attach_original, tmp_dir=tmp_dir)
+    except exporter.ExportError as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return ApiResponse.error(msg=str(e), code=400)
+    except Exception as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        logger.error(f"文档 {doc_id} 报告导出失败: {e}", exc_info=True)
+        return ApiResponse.error(msg=f"报告生成失败：{str(e)[:200]}", code=500)
+    finally:
+        if background is not None:
+            background.add_task(shutil.rmtree, str(tmp_dir), True)
+
+    name = f"doc_{doc_id}_r{it['snap'].revision}_报告.pdf"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/pdf",
+        headers={"Content-Disposition": _attachment(name)},
+    )
+
+
+@router.get("/export/reports", response_model=None)
+def export_batch_reports(
+    doc_ids: str = Query(..., description="文档ID数组，逗号分隔；最多 20 份"),
+    attach_original: bool = Query(False, description="是否附加原件"),
+    db: Session = Depends(get_db),
+):
+    """
+    批量导出：一份一个 PDF + export_manifest.json（记录每份 revision 与失败原因）。
+    部分成功可下载；全部失败返回错误，不产出空 ZIP。
+    """
+    id_list = _parse_doc_ids(doc_ids)
+    if not id_list:
+        return ApiResponse.error(msg="请提供有效的文档ID", code=400)
+    if len(id_list) > exporter.MAX_BATCH:
+        return ApiResponse.error(
+            msg=f"单次最多导出 {exporter.MAX_BATCH} 份，当前 {len(id_list)} 份，请分批导出",
+            code=400)
+
+    items = _prepare_export_items(db, id_list)
+    data, manifest = exporter.build_reports_zip(
+        items=items, attach_original=attach_original,
+        work_root=exporter.make_work_root())
+
+    if manifest["success_count"] == 0:
+        reasons = "；".join(
+            f"#{m['doc_id']} {m['reason']}" for m in manifest["items"])
+        return ApiResponse.error(
+            msg=f"全部 {manifest['failed_count']} 份导出失败：{reasons[:600]}", code=400)
+
+    name = f"文档报告批量导出_{manifest['success_count']}份.zip"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": _attachment(name),
+            # 失败份数直接放响应头，前端不用解包就能提示
+            "X-Export-Failed": str(manifest["failed_count"]),
+        },
+    )
+
+
+# ==================== 编辑辅助 ====================
+
+def _current_fields(db: Session, doc: DocumentInfo) -> tuple:
+    """返回 (当前快照, 当前有效字段列表)"""
+    snap = rev_svc.get_effective_snapshot(db, doc.id)
+    fields = rev_svc.snapshot_fields(snap) if snap else []
+    return snap, fields
+
+
+def _field_map(fields: List[Dict]) -> Dict[str, Optional[str]]:
+    """字段列表压成 键→规范值 映射"""
+    return {f.get("field_key"): f.get("field_value") for f in fields if f.get("field_key")}
+
+
+def _field_change_map(fields: List[Dict]) -> Dict[str, str]:
+    """
+    变更比对专用：**空值键不参与比对**。
+
+    原因：当前类型的注册表可能比这个版本快照建立时多出字段（代码升级/类型扩展），
+    编辑时会顺手补齐这些空槽。它们没有业务含义，若参与比对，
+    用户点开编辑再直接保存就会莫名多出一个版本。
+    而"把有值字段清空"是真实改动 —— 此时旧 map 有值、新 map 无此键，照样能比出来。
+    """
+    return {k: v for k, v in _field_map(fields).items() if v not in (None, "")}
+
+
+def _merge_public_fields(extracted: List[Dict], keep: Dict[str, Dict]) -> List[Dict]:
+    """切换类型后把公共字段（币种等）的旧值补回去 —— 只在抽取为空时兜底"""
+    merged = []
+    for row in extracted:
+        old = keep.get(row.get("field_key"))
+        if old and row.get("field_value") in (None, ""):
+            merged.append({
+                "field_key": row.get("field_key"),
+                "field_name": row.get("field_name"),
+                "field_value": old.get("field_value"),
+                "field_value_raw": old.get("field_value_raw"),
+            })
+        else:
+            merged.append(dict(row))
+    return merged
+
+
+@router.get("/field-specs", response_model=ApiResponse)
+def get_field_specs(doc_type: str = Query("other", description="文档类型：invoice/contract/other")):
+    """
+    某类型的字段规格（稳定键 + 中文标签 + 值类型）。
+
+    用途：界面切换类型时要先把目标类型的字段列出来给用户看并允许编辑，
+    **保存前**不提交任何东西。字段的真相在后端注册表里，前端不硬编码中文名。
+    """
+    if doc_type not in registry.DOC_TYPES:
+        return ApiResponse.error(
+            msg=f"不支持的文档类型: {doc_type}（可选 {', '.join(registry.DOC_TYPES)}）",
+            code=400)
+    return ApiResponse.success(data={
+        "doc_type": doc_type,
+        "items": [{"key": s.key, "label": s.label, "kind": s.kind}
+                  for s in registry.specs_for(doc_type)],
+    })
+
+
+# ==================== 动态路由 ====================
+
 @router.get("/{doc_id}", response_model=ApiResponse)
-def get_document_detail(doc_id: int, db: Session = Depends(get_db)):
-    """获取单份文档详情接口，返回原始文本、全部抽取结构化字段"""
+def get_document_detail(doc_id: int, request: Request, db: Session = Depends(get_db)):
+    """文档详情：原始 OCR 文本 + 当前有效文本 + 字段 + 版本/索引状态 + 原件 URL"""
+    doc = db.query(DocumentInfo).filter(DocumentInfo.id == doc_id).first()
+    if not doc or (doc.deleted_at is not None and
+                   getattr(request.state, "demo_role", "admin") == "guest"):
+        return ApiResponse.error(msg=f"文档不存在: ID={doc_id}", code=404)
+    return ApiResponse.success(data=_detail_dict(doc, db))
+
+
+@router.patch("/{doc_id}", response_model=ApiResponse)
+def patch_document(doc_id: int, body: DocumentPatchRequest,
+                   background: BackgroundTasks,
+                   db: Session = Depends(get_db)):
+    """
+    编辑文档（乐观并发）。
+
+    规则（任务书 3.2 / 3.3）：
+      - `expected_revision` 与当前版本不符 → 409，不覆盖他人改动，前端提示重新载入
+      - **OCR 原始文本永不被人工编辑覆盖**，编辑只产生新的有效全文
+      - 改文本不重抽字段，改字段不改写全文 —— 互不越界
+      - 切换类型：目标类型字段从当前有效全文抽取，公共字段（币种）保留旧值，
+        原类型字段只留在历史里
+      - 有变更才发布新版本；无变更不创建空版本（可单独打"已校对"标记）
+      - 发布成功后台触发索引重建（新版本在索引就绪前不参与问答）
+    """
     doc = db.query(DocumentInfo).filter(DocumentInfo.id == doc_id).first()
     if not doc:
         return ApiResponse.error(msg=f"文档不存在: ID={doc_id}", code=404)
+    if doc.deleted_at is not None:
+        return ApiResponse.error(msg="文档在回收站中，请先恢复再编辑", code=400)
+    if doc.current_revision is None:
+        return ApiResponse.error(msg="该文档尚无有效版本，无法编辑", code=400)
 
-    extracts = [
-        ExtractFieldOut(id=e.id, doc_id=e.doc_id, field_name=e.field_name, field_value=e.field_value)
-        for e in doc.extracts
+    if body.expected_revision != doc.current_revision:
+        return ApiResponse.error(
+            msg=f"文档已被其他人修改（当前版本 r{doc.current_revision}，"
+                f"你的编辑基于 r{body.expected_revision}）。请刷新后重新编辑，本次修改未保存。",
+            code=409,
+        )
+
+    snap, cur_fields = _current_fields(db, doc)
+    cur_text = (snap.effective_text if snap else None) or ""
+
+    target_type = body.doc_type or doc.doc_type or "other"
+    if target_type not in registry.DOC_TYPES:
+        return ApiResponse.error(
+            msg=f"不支持的文档类型: {target_type}（可选 {', '.join(registry.DOC_TYPES)}）",
+            code=400)
+
+    type_changed = target_type != (doc.doc_type or "other")
+    new_text = body.effective_text if body.effective_text is not None else cur_text
+
+    # ---------- 目标版本的字段集合 ----------
+    if type_changed:
+        # 类型变了才有理由重新抽取（这是用户显式确认过的操作，不是"悄悄"发生）
+        keep = {f["field_key"]: f for f in cur_fields
+                if f.get("field_key") in PUBLIC_FIELD_KEYS}
+        fields = _merge_public_fields(extract_for_type(new_text, target_type), keep)
+    else:
+        fields = [dict(f) for f in cur_fields]
+        # 注册表升级后旧快照可能缺字段：补齐为空值，不回放旧版本的抽取结果
+        specmap = registry.spec_map(target_type)
+        have = {f.get("field_key") for f in fields}
+        for key, spec in specmap.items():
+            if key not in have:
+                fields.append({"field_key": key, "field_name": spec.label,
+                               "field_value": None, "field_value_raw": None})
+
+    # ---------- 用户显式传入的字段（严格校验，超限报错而非静默舍入） ----------
+    if body.fields is not None:
+        specmap = registry.spec_map(target_type)
+        overrides: Dict[str, Dict] = {}
+        for key, raw in body.fields.items():
+            if key not in specmap and key not in PUBLIC_FIELD_KEYS:
+                return ApiResponse.error(
+                    msg=f"未知字段键：{key}（当前类型 {target_type} 不支持）", code=400)
+            spec = specmap.get(key)
+            exist = next((f for f in fields if f.get("field_key") == key), None)
+            label = (exist or {}).get("field_name") if exist else (spec.label if spec else key)
+            try:
+                value = registry.normalize_value(spec, raw, strict=True) if spec else (raw or None)
+            except ValueError as e:
+                return ApiResponse.error(msg=f"字段「{label}」取值不合法：{e}", code=400)
+            overrides[key] = {"field_key": key, "field_name": label,
+                              # 人工填写没有"抽取原文"这一说，field_value_raw 置空
+                              "field_value": value, "field_value_raw": None}
+
+        new_rows: List[Dict[str, Any]] = []
+        seen = set()
+        for f in fields:
+            key = f.get("field_key")
+            if key in overrides:
+                new_rows.append(overrides[key])
+                seen.add(key)
+            else:
+                new_rows.append(f)
+        for key, row in overrides.items():
+            if key not in seen:
+                new_rows.append(row)
+        fields = new_rows
+
+    # ---------- 是否真的有变化 ----------
+    text_changed = (new_text or "") != (cur_text or "")
+    fields_changed = _field_change_map(fields) != _field_change_map(cur_fields)
+    changed = text_changed or fields_changed or type_changed
+
+    if not changed:
+        data = {**_detail_dict(doc, db), "revision_created": False}
+        if body.mark_reviewed and not rev_svc.is_reviewed(doc):
+            try:
+                with GATE.write_section("标记已校对"):
+                    doc.reviewed_revision = doc.current_revision
+                    db.commit()
+            except BackupInProgress as e:
+                return ApiResponse.error(msg=str(e), code=409)
+            db.expire_all()
+            return ApiResponse.success(
+                data={**_detail_dict(doc, db), "revision_created": False},
+                msg="内容无变化，已标记当前版本为已校对")
+        return ApiResponse.success(data=data, msg="无实际变化，未创建新版本")
+
+    reason = rev_svc.REASON_RETYPE if type_changed else rev_svc.REASON_EDIT
+    try:
+        with GATE.write_section("编辑发布新版本"):
+            new_rev = rev_svc.publish_revision(
+                db, doc,
+                change_reason=reason,
+                doc_type=target_type,
+                ocr_raw_text=doc.ocr_raw_text,   # 原始 OCR 保持不变
+                effective_text=new_text,
+                fields=fields,
+                engine_type=doc.engine_type,
+                mark_reviewed=body.mark_reviewed,
+            )
+            db.commit()
+    except BackupInProgress as e:
+        return ApiResponse.error(msg=str(e), code=409)
+    except Exception as e:
+        db.rollback()
+        from fastapi import HTTPException
+        if isinstance(e, HTTPException):
+            raise
+        logger.error(f"文档 {doc_id} 发布新版本失败: {e}", exc_info=True)
+        return ApiResponse.error(msg="保存失败，请重新载入后重试", code=500)
+
+    db.expire_all()
+
+    # 新版本索引就绪前不参与问答（由 get_eligible_doc_ids 自动排除），这里后台重建
+    from app.services.rag_indexer import index_document_background
+    background.add_task(index_document_background, doc.id)
+
+    logger.info(f"文档 {doc_id} 编辑已发布 r{new_rev}（{reason}，{target_type}）")
+    return ApiResponse.success(
+        data={**_detail_dict(doc, db), "revision_created": True, "new_revision": new_rev},
+        msg=f"已发布新版本 r{new_rev}")
+
+
+@router.get("/{doc_id}/revisions", response_model=ApiResponse)
+def get_document_revisions(doc_id: int, request: Request, db: Session = Depends(get_db)):
+    """版本历史摘要（只读列表；快照详情走 /revisions/{revision}）"""
+    doc = db.query(DocumentInfo).filter(DocumentInfo.id == doc_id).first()
+    if not doc or (doc.deleted_at is not None and
+                   getattr(request.state, "demo_role", "admin") == "guest"):
+        return ApiResponse.error(msg=f"文档不存在: ID={doc_id}", code=404)
+    revs = rev_svc.list_revisions(db, doc_id)
+    items = [
+        RevisionSummaryOut(
+            revision=r.revision,
+            change_reason=r.change_reason,
+            doc_type=r.doc_type,
+            engine_type=r.engine_type,
+            created_at=r.created_at,
+            is_current=(r.revision == doc.current_revision),
+            is_reviewed=(r.revision == doc.reviewed_revision),
+        ).model_dump()
+        for r in revs
     ]
+    return ApiResponse.success(data={"items": items, "total": len(items)})
 
-    doc_out = DocumentOut(
-        id=doc.id,
-        file_name=doc.file_name,
-        file_path=doc.file_path,
-        file_type=doc.file_type,
-        upload_time=doc.upload_time,
-        ocr_raw_text=doc.ocr_raw_text,
-        infer_cost=doc.infer_cost,
-        status=doc.status,
-        error_msg=doc.error_msg,
-        extracts=extracts,
-    )
 
-    return ApiResponse.success(data=doc_out.model_dump())
+@router.get("/{doc_id}/revisions/{revision}", response_model=ApiResponse)
+def get_document_revision_snapshot(doc_id: int, revision: int,
+                                   request: Request,
+                                   db: Session = Depends(get_db)):
+    """只读版本快照：完整文本与字段；回收站外不可见（文档被永久删除后快照随之销毁）"""
+    doc = db.query(DocumentInfo).filter(DocumentInfo.id == doc_id).first()
+    if not doc or (doc.deleted_at is not None and
+                   getattr(request.state, "demo_role", "admin") == "guest"):
+        return ApiResponse.error(msg=f"文档不存在: ID={doc_id}", code=404)
+    rev = rev_svc.get_effective_snapshot(db, doc_id, revision)
+    if not rev:
+        return ApiResponse.error(msg=f"版本不存在: r{revision}", code=404)
+    return ApiResponse.success(data={
+        "doc_id": doc_id,
+        "revision": rev.revision,
+        "change_reason": rev.change_reason,
+        "doc_type": rev.doc_type,
+        "engine_type": rev.engine_type,
+        "ocr_raw_text": rev.ocr_raw_text,
+        "effective_text": rev.effective_text,
+        "fields": rev_svc.snapshot_fields(rev),
+        "created_at": rev.created_at.isoformat() if rev.created_at else None,
+        "is_current": rev.revision == doc.current_revision,
+    })
 
 
 @router.delete("/{doc_id}", response_model=ApiResponse)
 def delete_document(doc_id: int, db: Session = Depends(get_db)):
-    """删除文档及关联抽取字段数据接口"""
+    """软删除：进回收站。立刻排除列表/统计/导出/问答；原件与历史全部保留。"""
     doc = db.query(DocumentInfo).filter(DocumentInfo.id == doc_id).first()
     if not doc:
         return ApiResponse.error(msg=f"文档不存在: ID={doc_id}", code=404)
+    if doc.deleted_at is not None:
+        return ApiResponse.error(msg="文档已在回收站", code=400)
 
-    # 删除本地文件
-    import os
-    from pathlib import Path
-    file_path = Path(doc.file_path)
-    if file_path.exists():
-        try:
-            file_path.unlink()
-            logger.info(f"已删除本地文件: {file_path}")
-        except Exception as e:
-            logger.warning(f"删除本地文件失败: {e}")
+    try:
+        with GATE.write_section("软删除"):
+            doc.deleted_at = datetime.now()
+            db.commit()
+    except BackupInProgress as e:
+        return ApiResponse.error(msg=str(e), code=409)
+    logger.info(f"文档 {doc_id} 已软删除（回收站）")
+    return ApiResponse.success(msg=f"文档已移入回收站: ID={doc_id}")
 
-    # 删除数据库记录（关联的 document_extract 通过 cascade 自动删除）
-    db.delete(doc)
-    db.commit()
 
-    return ApiResponse.success(msg=f"文档删除成功: ID={doc_id}")
+@router.post("/{doc_id}/restore", response_model=ApiResponse)
+def restore_document(doc_id: int, db: Session = Depends(get_db)):
+    """从回收站恢复；恢复后索引状态若落后当前版本则标记待重建（P2 启动补偿/后台索引接管）"""
+    doc = db.query(DocumentInfo).filter(DocumentInfo.id == doc_id).first()
+    if not doc:
+        return ApiResponse.error(msg=f"文档不存在: ID={doc_id}", code=404)
+    if doc.deleted_at is None:
+        return ApiResponse.error(msg="文档不在回收站", code=400)
+
+    doc.deleted_at = None
+    # 恢复后重新校验索引：版本不一致或失败 → 置为待索引
+    if doc.index_state and (
+        doc.index_state.indexed_revision != doc.current_revision
+        or doc.index_state.status == 2
+    ):
+        doc.index_state.status = 0
+    try:
+        with GATE.write_section("恢复"):
+            db.commit()
+    except BackupInProgress as e:
+        return ApiResponse.error(msg=str(e), code=409)
+    logger.info(f"文档 {doc_id} 已从回收站恢复")
+    return ApiResponse.success(msg=f"文档已恢复: ID={doc_id}")
+
+
+@router.delete("/{doc_id}/permanent", response_model=ApiResponse)
+def permanent_delete_document(doc_id: int, db: Session = Depends(get_db)):
+    """
+    永久删除：仅回收站条目可执行。
+    安全约束：文件路径 resolve 后必须位于 UPLOAD_DIR 内（防目录穿越）；
+    原件删除失败时不删库记录、不返回完全成功，保留待清理信息。
+    """
+    doc = db.query(DocumentInfo).filter(DocumentInfo.id == doc_id).first()
+    if not doc:
+        return ApiResponse.error(msg=f"文档不存在: ID={doc_id}", code=404)
+    if doc.deleted_at is None:
+        return ApiResponse.error(
+            msg="仅回收站中的文档可以永久删除（请先删除再执行本操作）", code=400)
+
+    # 先处理原件：失败则不继续，避免"库已删、文件残留且无从追查"
+    file_deleted = True
+    file_note = ""
+    try:
+        fp = Path(doc.file_path).resolve()
+        root = Path(UPLOAD_DIR).resolve()
+        if root not in fp.parents and fp != root:
+            return ApiResponse.error(
+                msg="原件路径不在本应用存储目录内，已拒绝删除（疑似异常数据）", code=400)
+        if fp.exists():
+            fp.unlink()
+            file_note = "原件已删除"
+        else:
+            file_note = "原件已不存在（仅删除记录）"
+    except Exception as e:
+        file_deleted = False
+        logger.warning(f"永久删除文档 {doc_id}：原件删除失败：{e}")
+
+    if not file_deleted:
+        return ApiResponse.error(
+            msg="原件删除失败，已保留数据库记录，请检查文件占用后重试", code=500)
+
+    try:
+        with GATE.write_section("永久删除"):
+            db.delete(doc)  # extracts/chunks/index_state/revisions 由 ORM 级联删除
+            db.commit()
+    except BackupInProgress as e:
+        return ApiResponse.error(msg=str(e), code=409)
+    logger.info(f"文档 {doc_id} 已永久删除（{file_note}）")
+    return ApiResponse.success(msg=f"文档已永久删除: ID={doc_id}（{file_note}）")

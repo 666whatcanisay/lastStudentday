@@ -24,5 +24,20 @@ export default defineConfig({
     // 构建输出到后端的 static_vite 目录，FastAPI 通过 /vite/ 路径提供服务
     outDir: '../app/static_vite',
     emptyOutDir: true,
+    // Large framework libraries change far less often than application code.
+    // Split them for browser caching; the higher threshold applies only to
+    // these deliberate local vendor bundles, not to our feature chunks.
+    chunkSizeWarningLimit: 1300,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('echarts') || id.includes('zrender')) return 'charts-vendor'
+          if (id.includes('element-plus') || id.includes('@element-plus') || id.includes('@vueuse')) return 'ui-vendor'
+          if (id.includes('/vue/') || id.includes('@vue/')) return 'vue-vendor'
+          if (id.includes('axios')) return 'http-vendor'
+        },
+      },
+    },
   },
 })

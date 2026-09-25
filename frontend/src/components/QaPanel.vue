@@ -14,6 +14,8 @@
   <div class="qa-wrap">
     <!-- ============ 左：对话区 ============ -->
     <div class="qa-main">
+      <el-alert title="仅在点击发送时，问题及相关文档片段才会发送给已配置的云端模型。其他功能在本地处理。"
+                type="info" :closable="false" show-icon />
       <!-- ---- 状态条：索引 / LLM 可用性 ---- -->
       <div v-if="banner.show" class="qa-banner">
         <el-alert
@@ -25,7 +27,7 @@
           <template #title>
             <span class="banner-title">{{ banner.title }}</span>
             <el-button
-              v-if="banner.action"
+              v-if="banner.action && isAdmin"
               size="small"
               type="primary"
               link
@@ -312,6 +314,8 @@ import {
 import CitationCard from './CitationCard.vue'
 import RetrievalTrace from './RetrievalTrace.vue'
 import SourceDrawer from './SourceDrawer.vue'
+
+defineProps({ isAdmin: { type: Boolean, default: true } })
 
 // ==================== 常量 ====================
 const MODE_HINT = {
@@ -611,7 +615,9 @@ onMounted(() => {
   loadDocOptions()
 })
 
-defineExpose({ refresh: () => { loadConfig(); loadIndexStatus(); loadDocOptions() } })
+// Returning from the editor may invalidate any conversation anchor. Keep the
+// displayed transcript, but do not silently reuse its old material as context.
+defineExpose({ refresh: () => { turns.value = []; loadConfig(); loadIndexStatus(); loadDocOptions() } })
 </script>
 
 <style scoped>

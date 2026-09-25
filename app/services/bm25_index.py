@@ -216,12 +216,17 @@ class BM25Index:
         hits = self.search(query, top_n=1)
         return (hits[0]["score"] / mass) if hits else 0.0
 
-    def search(self, query: str, top_n: int = 20) -> List[Dict]:
+    def search(self, query: str, top_n: int = 20,
+               doc_ids: Optional[List[int]] = None) -> List[Dict]:
         """
         关键词检索。
 
-        参数: query — 查询文本（内部会分词）
-              top_n — 返回条数
+        参数: query   — 查询文本（内部会分词）
+              top_n   — 返回条数
+              doc_ids — 可选：限定文档范围，**在选 Top-N 之前**生效。
+                        None = 不限；[] = 无文档（直接返回空，绝不扩大为全部）。
+                        任务书 3.2 要求范围在召回前生效：先算全量分再挑 Top-N 的话，
+                        范围外的文档会挤占名额，导致范围内真正相关的命中被挤出。
         返回: [{"chunk_id":.., "doc_id":.., "score":.., "bm25_rank":.., ...}, ...]
               score 为原始 BM25 分值（无上界，融合时由 fusion 模块处理）
         """
@@ -267,6 +272,16 @@ class BM25Index:
 
         if not scores:
             return []
+
+        # 文档范围过滤（若指定）：先把范围外的候选剔除，再挑 Top-N
+        if doc_ids is not None:
+            allowed = set(doc_ids)
+            if not allowed:
+                return []
+            scores = {idx: s for idx, s in scores.items()
+                      if self._meta[idx].get("doc_id") in allowed}
+            if not scores:
+                return []
 
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
 

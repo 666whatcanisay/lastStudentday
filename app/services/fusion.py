@@ -110,7 +110,10 @@ def weighted_fuse(vec_hits: List[Dict], bm25_hits: List[Dict],
         rng = hi - lo
         if rng <= 1e-9:
             return {h["chunk_id"]: 1.0 for h in hits}
-        return {h["chunk_id"]: (h.get("score") or 0.0 - lo) / rng for h in hits}
+        # ⚠️ 运算符优先级坑（方案 B 修复）：`h.get("score") or 0.0 - lo` 会被解析为
+        #    `score or (0.0 - lo)` —— score 非零时 lo 根本没被减掉，归一化结果全错。
+        #    正确形式必须先取 score 的 or 默认值、再整体减 lo。
+        return {h["chunk_id"]: ((h.get("score") or 0.0) - lo) / rng for h in hits}
 
     merged: Dict[int, Dict] = {}
     scores: Dict[int, float] = {}

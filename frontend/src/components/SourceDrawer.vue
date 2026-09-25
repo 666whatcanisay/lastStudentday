@@ -54,6 +54,7 @@
 
       <!-- 原文 -->
       <div v-loading="loading" class="src-body">
+        <el-alert v-if="notice" :title="notice" type="warning" :closable="false" show-icon />
         <template v-if="text">
           <pre v-if="hitRange" class="src-text"><span>{{ text.slice(0, hitRange[0]) }}</span><mark ref="markEl" class="src-mark">{{ text.slice(hitRange[0], hitRange[1]) }}</mark><span>{{ text.slice(hitRange[1]) }}</span></pre>
           <pre v-else class="src-text">{{ text }}</pre>
@@ -72,7 +73,7 @@
 
 <script setup>
 import { computed, ref, watch, nextTick } from 'vue'
-import { getDocumentDetail } from '../api/index.js'
+import { getDocumentDetail, getDocumentRevision } from '../api/index.js'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -86,6 +87,8 @@ const emit = defineEmits(['update:modelValue', 'prev', 'next'])
 
 const text = ref('')
 const loading = ref(false)
+const notice = ref('')
+let requestSequence = 0
 const markEl = ref(null)
 
 /**
@@ -95,7 +98,7 @@ const markEl = ref(null)
  */
 const hitRange = computed(() => {
   const r = props.refItem
-  if (!r || r.char_start == null || r.char_end == null || !text.value) return null
+  if (!r || r.source_kind === 'fields' || r.char_start == null || r.char_end == null || !text.value) return null
   const len = text.value.length
   const s = Math.max(0, Math.min(r.char_start, len))
   const e = Math.max(s, Math.min(r.char_end, len))
@@ -103,19 +106,38 @@ const hitRange = computed(() => {
 })
 
 watch(
-  () => [props.modelValue, props.refItem?.chunk_id],
+  () => [props.modelValue, props.refItem?.doc_id, props.refItem?.revision, props.refItem?.chunk_id],
   async ([visible]) => {
     if (!visible || !props.refItem) return
     if (props.refItem.doc_id === undefined || props.refItem.doc_id === null) return
     loading.value = true
     text.value = ''
+    notice.value = ''
+    const ticket = ++requestSequence
+    const reference = { ...props.refItem }
     try {
-      const res = await getDocumentDetail(props.refItem.doc_id)
-      text.value = res.data?.ocr_raw_text || ''
+      const current = (await getDocumentDetail(reference.doc_id)).data
+      if (ticket !== requestSequence) return
+      if (current.deleted_at) {
+        notice.value = '该文档已删除，此引用不再有效。'
+        return
+      }
+      if (reference.revision == null) {
+        notice.value = '旧引用缺少版本信息，请重新提问。'
+        return
+      }
+      const snapshot = (await getDocumentRevision(reference.doc_id, reference.revision)).data
+      if (ticket !== requestSequence) return
+      notice.value = reference.revision !== current.current_revision
+        ? `旧版本 r${reference.revision}（当前 r${current.current_revision}），不代表当前结果。`
+        : `引用版本 r${reference.revision} · ${reference.source_kind === 'fields' ? '结构化字段' : '校对后的全文'}`
+      text.value = reference.source_kind === 'fields'
+        ? (snapshot.fields || []).map(f => `${f.field_name}：${f.field_value ?? '未识别'}`).join('\n')
+        : snapshot.effective_text || ''
     } catch (e) {
-      text.value = ''
+      if (ticket === requestSequence) { text.value = ''; notice.value = '引用已不可用，请重新提问。' }
     } finally {
-      loading.value = false
+      if (ticket === requestSequence) loading.value = false
       nextTick(scrollToHit)
     }
   }

@@ -9,12 +9,50 @@ const http = axios.create({
     timeout: 30000,
 })
 
+/** 从 Content-Disposition 里取出后端给的中文文件名 */
+function filenameFrom(disposition) {
+    if (!disposition) return ''
+    const m = /filename\*=UTF-8''([^;]+)/i.exec(disposition)
+    if (m) {
+        try { return decodeURIComponent(m[1]) } catch (e) { return m[1] }
+    }
+    const m2 = /filename="?([^";]+)"?/i.exec(disposition)
+    return m2 ? m2[1] : ''
+}
+
 // ==================== 响应拦截器 ====================
 http.interceptors.response.use(
     (response) => {
-        // 如果是 Blob 类型（如 Excel 导出），直接返回原始响应，不走 JSON 检查
+        // Blob 类响应（PDF/ZIP/Excel 导出）：
+        // 必须先看 Content-Type —— 后端出错时返回的是 **JSON**，
+        // 若当成文件交给用户保存，就会得到一个名为 xxx.pdf 的错误文本，
+        // 用户打开只看到一串 JSON，完全不知道发生了什么。
         if (response.config.responseType === 'blob') {
-            return response.data
+            const ct = String(response.headers?.['content-type'] || '')
+            if (ct.includes('application/json')) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader()
+                    reader.onerror = () => {
+                        ElMessage.error('导出失败：无法读取服务端响应')
+                        reject(new Error('export-response-unreadable'))
+                    }
+                    reader.onload = () => {
+                        try {
+                            const d = JSON.parse(String(reader.result))
+                            ElMessage.error(d.message || d.msg || '导出失败')
+                            reject(d)
+                        } catch (e) {
+                            ElMessage.error('导出失败')
+                            reject(new Error('export-failed'))
+                        }
+                    }
+                    reader.readAsText(response.data)
+                })
+            }
+            return {
+                data: response.data,
+                filename: filenameFrom(response.headers?.['content-disposition']),
+            }
         }
         const data = response.data
         if (data.code !== 200) {
@@ -24,6 +62,9 @@ http.interceptors.response.use(
         return data
     },
     (error) => {
+        if (error.response?.status === 401) {
+            window.dispatchEvent(new Event('doc-ocr-auth-expired'))
+        }
         // 处理 FastAPI 422 校验错误，显示具体字段提示
         if (error.response?.status === 422) {
             const details = error.response?.data?.detail
@@ -93,22 +134,170 @@ export function getDocumentDetail(docId) {
     return http.get(`/document/${docId}`)
 }
 
-/** 批量导出 Excel（返回 Blob） */
+/**
+ * 批量导出 Excel（返回 { data: Blob, filename }）
+ *
+ * 拦截器已处理「后端返回 JSON 错误」的情况：那种请求会被 reject，
+ * 不会把错误文本当成 xlsx 存下来。
+ */
 export function exportExcel(docIds) {
     return http.get('/document/export', {
         params: { doc_ids: docIds.join(',') },
         responseType: 'blob',
+        timeout: 180000,
     })
 }
 
-/** 删除文档 */
+/**
+ * 单份 PDF 识别结果报告
+ * attachOriginal=true 时若原件缺失，后端明确报错（不静默省略附录）
+ */
+export function exportReport(docId, attachOriginal = false) {
+    return http.get('/document/export/report', {
+        params: { doc_id: docId, attach_original: attachOriginal },
+        responseType: 'blob',
+        timeout: 180000,
+    })
+}
+
+/**
+ * 批量 PDF 报告 ZIP（最多 20 份；部分成功可下载，全部失败后端直接报错）
+ * 超时给到 5 分钟：附原件时要把原件逐份写进 ZIP，20 份可能不快。
+ */
+export function exportReports(docIds, attachOriginal = false) {
+    return http.get('/document/export/reports', {
+        params: { doc_ids: docIds.join(','), attach_original: attachOriginal },
+        responseType: 'blob',
+        timeout: 300000,
+    })
+}
+
+/** 把 Blob 存成文件（用后端给的文件名，避免中文名乱码） */
+export function saveBlob(blob, filename) {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename || 'export'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    // 立刻 revoke 在部分浏览器会取消下载，延后释放更稳
+    setTimeout(() => URL.revokeObjectURL(url), 3000)
+}
+
+/** 删除文档（软删除，进回收站） */
 export function deleteDocument(docId) {
     return http.delete(`/document/${docId}`)
+}
+
+/** 从回收站恢复 */
+export function restoreDocument(docId) {
+    return http.post(`/document/${docId}/restore`)
+}
+
+/** 永久删除（仅回收站条目） */
+export function permanentDeleteDocument(docId) {
+    return http.delete(`/document/${docId}/permanent`)
+}
+
+/**
+ * 编辑文档（乐观并发）
+ *
+ * 后端 expected_revision 与当前版本不一致时返回 code=409（HTTP 200 包体里的 code 字段），
+ * 拦截器会把非 200 的包体整体 reject，调用方拿 e.code === 409 判断冲突。
+ */
+export function patchDocument(docId, payload) {
+    return http.patch(`/document/${docId}`, payload)
+}
+
+/** 版本历史摘要 */
+export function getDocumentRevisions(docId) {
+    return http.get(`/document/${docId}/revisions`)
+}
+
+/** 只读版本快照 */
+export function getDocumentRevision(docId, revision) {
+    return http.get(`/document/${docId}/revisions/${revision}`)
+}
+
+/**
+ * 字段规格（某类型的稳定字段键与中文标签）
+ * 用于切换类型时在界面上列出新字段，**保存前**让用户编辑，而不是悄悄提交。
+ */
+export function getFieldSpecs(docType) {
+    return http.get('/document/field-specs', { params: { doc_type: docType } })
+}
+
+/**
+ * 重新识别（force=true）
+ * 已有的识别结果不会被悄悄覆盖：后端要求已有有效版本时必须显式 force，
+ * 前端在此之前弹确认框，用户点确认才带这个参数。
+ */
+export function reRecognizeOCR(docId) {
+    return http.post('/ocr/recognize', { doc_id: docId, force: true }, { timeout: 300000 })
+}
+
+/**
+ * 原件预览/下载 URL
+ * 只传文档 ID，不接受客户端文件路径（后端按 ID 查库并校验路径在存储目录内）
+ */
+export function previewUrl(docId, download = false) {
+    return `/api/file/preview/${docId}${download ? '?download=true' : ''}`
+}
+
+/**
+ * 分类统计（任务书 3.4 唯一口径）
+ *
+ * 返回的金额一律是**十进制字符串**，前端只做展示，绝不重新计算财务合计 ——
+ * 一旦前端自己加一遍，就会和后端口径不一致（跨币种混算就是从这种地方长出来的）。
+ */
+export function getAnalytics(params) {
+    return http.get('/document/analytics', { params })
+}
+
+/**
+ * 统计明细穿透：与图表共用同一套过滤条件
+ * 额外支持 month / party_role+party / require_amount（金额图点开时必须带）
+ */
+export function getAnalyticsDetails(params) {
+    return http.get('/document/analytics/details', { params })
+}
+
+// ==================== 数据维护（备份 / 恢复说明） ====================
+
+/**
+ * 手动一致性备份（返回 { data: Blob, filename }）
+ * 后端在写入门禁等待超时（60s）时返回 409 + 明确提示，前端不要反复重试同一个任务。
+ */
+export function createBackup() {
+    return http.post('/maintenance/backup', null, {
+        responseType: 'blob',
+        timeout: 300000,
+    })
+}
+
+/** 恢复说明与脚本入口（只给项目内相对路径） */
+export function getRestoreInfo() {
+    return http.get('/maintenance/restore-info')
 }
 
 /** 健康检查 / OCR 引擎信息 */
 export function getHealth() {
     return http.get('/health')
+}
+
+// ==================== 临时公网演示登录 ====================
+
+export function getAuthStatus() {
+    return http.get('/auth/me')
+}
+
+export function loginDemo(password) {
+    return http.post('/auth/login', { password })
+}
+
+export function logoutDemo() {
+    return http.post('/auth/logout')
 }
 
 // ==================== RAG 检索增强生成 ====================

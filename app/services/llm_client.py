@@ -185,9 +185,10 @@ class LLMClient:
                     }
 
                 # 非 200：确定性错误直接返回，可重试错误走重试分支
-                body = resp.text[:300]
-                last_error = f"http_{resp.status_code}: {body}"
-                logger.warning(f"LLM 调用返回 {resp.status_code}（第{attempt + 1}次）: {body}")
+                # Provider errors can echo user text or credentials. Do not
+                # return/log the body, even when only the first 300 chars fit.
+                last_error = f"http_{resp.status_code}"
+                logger.warning(f"LLM 调用返回 {resp.status_code}（第{attempt + 1}次）")
                 if resp.status_code not in RETRYABLE_STATUS:
                     return {
                         "ok": False, "content": None, "model": self.model,
@@ -195,13 +196,13 @@ class LLMClient:
                     }
 
             except httpx.TimeoutException as e:
-                last_error = f"timeout: {e}"
-                logger.warning(f"LLM 调用超时（第{attempt + 1}次）: {e}")
+                last_error = "timeout"
+                logger.warning(f"LLM 调用超时（第{attempt + 1}次）")
             except httpx.HTTPError as e:
-                last_error = f"network: {e}"
-                logger.warning(f"LLM 网络错误（第{attempt + 1}次）: {e}")
+                last_error = "network_error"
+                logger.warning(f"LLM 网络错误（第{attempt + 1}次）")
             except Exception as e:  # 兜底，绝不让异常逃逸
-                last_error = f"unexpected: {e}"
+                last_error = "unexpected_error"
                 logger.exception("LLM 调用出现未预期错误")
 
         return {

@@ -9,14 +9,27 @@ from pathlib import Path
 # 项目根目录
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# 数据根目录：可用环境变量 DOC_OCR_DATA_DIR 覆盖，供测试/维护脚本使用隔离目录。
+# 未设置时与历史布局完全一致（uploads/ 与 data/ 均在项目根下），保证存量部署零迁移。
+DATA_ROOT = Path(os.getenv("DOC_OCR_DATA_DIR", str(BASE_DIR))).resolve()
+
 # 上传文件存储目录
-UPLOAD_DIR = BASE_DIR / "uploads"
+UPLOAD_DIR = DATA_ROOT / "uploads"
 # SQLite 数据库文件路径
-DATABASE_PATH = BASE_DIR / "data" / "doc_ocr_v2.db"
+DATABASE_PATH = DATA_ROOT / "data" / "doc_ocr_v2.db"
+# 备份输出目录（刻意放在 data/ 下而非 uploads/ 内，避免递归备份自身）
+BACKUP_DIR = DATA_ROOT / "data" / "backups"
+# 导出/维护的受控临时目录（启动时只清理本目录下本应用产物，绝不触碰系统临时目录）
+TMP_DIR = DATA_ROOT / "data" / "tmp"
+# 恢复脚本暂存目录
+RESTORE_STAGING_DIR = DATA_ROOT / "data" / "restore_staging"
 # 前端静态文件目录
 STATIC_DIR = BASE_DIR / "app" / "static"
-# 模型文件目录
+# 模型文件目录（模型不随数据目录迁移，仍绑定项目）
 MODEL_DIR = BASE_DIR / "models"
+
+# 备份清单里的结构版本：schema 兼容判断用，随 Alembic 头版本升级
+SCHEMA_VERSION = 2
 
 # 确保目录存在
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -374,6 +387,8 @@ def load_dotenv_if_exists():
     用于把 LLM_API_KEY 等敏感配置从环境变量注入，避免写入代码或提交到仓库。
     不引入 python-dotenv 依赖，仅支持 KEY=VALUE 的简单格式。
     """
+    if os.getenv('DOC_OCR_SKIP_DOTENV') == '1':
+        return
     env_file = BASE_DIR / ".env"
     if not env_file.exists():
         return

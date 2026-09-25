@@ -32,6 +32,7 @@ from app.services.query_rewrite import rewrite as rewrite_query
 from app.services.rag_indexer import index_documents, reindex_never_indexed
 from app.services.rag_pipeline import ask as rag_ask, retrieve
 from app.services.vector_store import get_index_status
+from app.services.backup_gate import GATE, BackupInProgress
 
 router = APIRouter(prefix="/api/rag", tags=["RAG检索增强"])
 logger = logging.getLogger(__name__)
@@ -108,7 +109,11 @@ def rebuild_index(req: RagIndexRequest, db: Session = Depends(get_db)):
         return ApiResponse.error(msg="RAG 功能未启用（RAG_ENABLED=False）", code=503)
 
     logger.info(f"=== 开始重建索引 doc_ids={req.doc_ids or '全部'} ===")
-    result = index_documents(db, req.doc_ids)
+    try:
+        with GATE.write_section("重建索引"):
+            result = index_documents(db, req.doc_ids)
+    except BackupInProgress as e:
+        return ApiResponse.error(msg=str(e), code=409)
     return ApiResponse.success(data=result, msg=f"索引重建完成：{result['success']}/{result['total']} 成功")
 
 
@@ -130,7 +135,11 @@ def retry_index(db: Session = Depends(get_db)):
     if not RAG_ENABLED:
         return ApiResponse.error(msg="RAG 功能未启用", code=503)
 
-    result = reindex_never_indexed(db)
+    try:
+        with GATE.write_section("重试索引"):
+            result = reindex_never_indexed(db)
+    except BackupInProgress as e:
+        return ApiResponse.error(msg=str(e), code=409)
     if result["total"] == 0:
         return ApiResponse.success(data=result, msg="没有需要重试的文档")
     return ApiResponse.success(data=result, msg=f"重试完成：{result['success']}/{result['total']} 成功")
@@ -213,6 +222,13 @@ def ask(req: RagAskRequest, db: Session = Depends(get_db)):
 
     history = [h.model_dump() for h in req.history] if req.history else None
 
+    # 任务书 3.5：首版 ask 的查询改写/指代消解统一用本地规则，
+    # 不为了改写额外调用云端 LLM（成本与时延都不划算）。
+    # 接口参数保留但在此强制置回 False —— 行为可预期，不静默产生云端调用。
+    if req.use_llm_rewrite:
+        logger.info("收到 use_llm_rewrite=true：本版统一使用本地改写规则，不调用云端")
+    use_llm_rewrite = False
+
     result = rag_ask(
         db,
         question=req.question,
@@ -222,7 +238,7 @@ def ask(req: RagAskRequest, db: Session = Depends(get_db)):
         min_score=req.min_score,
         fusion_mode=req.fusion_mode,
         rewrite_enable=req.rewrite,
-        use_llm_rewrite=req.use_llm_rewrite,
+        use_llm_rewrite=use_llm_rewrite,
         history=history,
     )
 
@@ -234,6 +250,7 @@ def ask(req: RagAskRequest, db: Session = Depends(get_db)):
             "llm_not_configured": "未配置 LLM，已降级为仅检索模式",
             "llm_call_failed": "LLM 调用失败，已降级为仅检索模式",
             "vector_model_unavailable": "向量模型不可用，已降级为关键词检索",
+            "references_invalidated": "资料在回答期间已变更，本次结果已作废，请重新提问",
         }
         return ApiResponse.success(data=result, msg=msg_map.get(reason, "已降级"))
 
@@ -246,15 +263,30 @@ def rewrite_only(req: RagRewriteRequest):
     仅执行查询改写，不做检索（调试与教学演示用）
 
     便于直观看到「上个月」被解析成了哪个绝对区间、口语词被扩展成了哪些术语。
+
+    ⚠️ 云端约束（任务书 3.5）：本接口**不是用户主动发起的问答**，
+    因此即便前端传来 use_llm_rewrite=true 也**拒绝云端模式**，一律走本地规则。
+    需要带云端 LLM 的完整问答请调用 /api/rag/ask。
     """
     if not RAG_ENABLED:
         return ApiResponse.error(msg="RAG 功能未启用", code=503)
 
+    if req.use_llm_rewrite:
+        logger.warning(
+            "拒绝云端改写请求：/api/rag/rewrite 属于非主动问答接口，"
+            "按任务书 3.5 不调用云端模型"
+        )
+        return ApiResponse.error(
+            msg="本接口不支持云端改写（非主动问答不调用云端模型），已保持本地规则；"
+                "如需云端生成回答请调用 /api/rag/ask",
+            code=400,
+        )
+
     result = rewrite_query(
         req.query,
         enable=True,
-        use_llm=req.use_llm_rewrite,
-        llm_client=get_llm_client() if req.use_llm_rewrite else None,
+        use_llm=False,
+        llm_client=None,
     )
     return ApiResponse.success(data=result)
 

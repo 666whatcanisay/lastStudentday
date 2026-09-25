@@ -1,0 +1,84 @@
+# 忽略上传的文件
+uploads/*
+!uploads/.gitkeep
+
+# 忽略数据库文件
+data/*.db
+data/*.db-journal
+# WAL 模式的附属文件（database.py 已开启 journal_mode=WAL）
+data/*.db-wal
+data/*.db-shm
+
+# 忽略敏感配置（LLM API Key 等）
+.env
+
+# 忽略本地模型文件（bge 向量模型约 95MB，按需从镜像下载）
+models/*
+!models/.gitkeep
+
+# 忽略 Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 忽略 IDE 文件
+.idea/
+.vscode/
+*.swp
+
+# 前端依赖与构建产物
+#
+# app/static_vite/ 是 Vite 的构建产物（main.py 挂到 /vite 并以 / 为正式入口）。
+# 不提交：带哈希的供应商分包每次构建可能变化，会淹没真正的源码改动。
+# 克隆后跑 `cd frontend && npm run build` 生成。
+# 不构建时首页明确返回 503 和构建方法；不会回退到已停用的旧 CDN 页面。
+node_modules/
+app/static_vite/
+
+# 运行日志（server.log 等）
+*.log
+
+# 验收 / 体检脚本的临时产物（脚本运行时会生成）
+.ui-accept-poll.txt
+.ui-accept-result.json
+.tmp-*
+
+# 评估语料（scripts/gen_corpus.py 生成、scripts/ingest_corpus.py 入库）
+# PDF 本体**提交**（约 508K）—— 语料是评估结论的依据，不提交就没法复现。
+# 但入库映射不提交：doc_id 依赖各自数据库的自增序列，换环境必然不同，
+# 提交它反而会误导别人以为 doc_id 是固定的。
+test_corpus/_ingest_map.json
+
+# 量化对比实验的临时模型产物（由 scripts/eval_ocr_quantization.py 生成并自动清理）
+models/quantized/
+
+# ORT quant_pre_process 会在 CWD 留这个临时文件，要挡掉
+sym_shape_infer_temp.onnx
+# 改动前的数据库备份（本地回滚点，不入库）
+data/*.db.bak-*
+
+# Word / Office 打开文档时生成的临时锁文件（关闭文档后会自动消失，
+# 但报告正在预览时会被 git status 捕获）
+~$*
+
+# 生成配图用的临时 HTML（scripts/make_report_shots.py 跑完会自动删，
+# 这里兜底防止脚本中途失败留下残骸）
+reports/_shots/
+
+# 公开源码仓库：任何运行时数据、验收产物与浏览器记录均不提交
+/data/
+/uploads/
+/models/
+/reports/
+/output/
+/.playwright-cli/
+/.pytest_cache/
+/frontend/dist/
+/.env.*
+!/.env.example
+*.sqlite
+*.sqlite3
+*.db
+*.db-*
