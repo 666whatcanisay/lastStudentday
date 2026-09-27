@@ -22,9 +22,12 @@
           <span class="card-subtitle">
             统计口径：未在回收站 + 有当前有效版本 + 非模拟引擎；金额只统计发票「价税合计」与合同「合同金额」
           </span>
+          <el-button class="mobile-filter-toggle" size="small" @click="filtersOpen = !filtersOpen">
+            {{ filtersOpen ? '收起' : '展开' }}
+          </el-button>
         </div>
       </template>
-      <el-form :inline="true" class="filter-form">
+      <el-form :inline="true" class="filter-form" :class="{ 'is-open': filtersOpen }">
         <el-form-item label="类型">
           <el-select v-model="filters.docType" clearable placeholder="全部" style="width: 120px">
             <el-option label="发票" value="invoice" />
@@ -77,21 +80,26 @@
       </el-alert>
     </el-card>
 
+    <el-alert v-if="data.summary && qualityMessage" class="quality-alert" type="warning" :closable="false" show-icon>
+      <template #title>数据质量提示</template>
+      <div>{{ qualityMessage }}</div>
+    </el-alert>
+
     <!-- ===== 数量卡 ===== -->
     <el-row :gutter="12" class="stat-row">
-      <el-col :span="4">
+      <el-col :xs="12" :sm="8" :md="4">
         <el-card shadow="hover" class="mini-card">
           <div class="mini-label">有效文档</div>
           <div class="mini-value">{{ data.summary?.doc_count ?? 0 }}</div>
         </el-card>
       </el-col>
-      <el-col :span="4">
+      <el-col :xs="12" :sm="8" :md="4">
         <el-card shadow="hover" class="mini-card">
           <div class="mini-label">未校对</div>
           <div class="mini-value warn">{{ data.summary?.unreviewed_count ?? 0 }}</div>
         </el-card>
       </el-col>
-      <el-col :span="4">
+      <el-col :xs="12" :sm="8" :md="4">
         <el-card shadow="hover" class="mini-card">
           <div class="mini-label">
             日期缺失
@@ -102,7 +110,7 @@
           <div class="mini-value warn">{{ data.summary?.missing_date_count ?? 0 }}</div>
         </el-card>
       </el-col>
-      <el-col :span="4">
+      <el-col :xs="12" :sm="8" :md="4">
         <el-card shadow="hover" class="mini-card">
           <div class="mini-label">
             金额缺失
@@ -110,10 +118,11 @@
               <el-icon class="tip"><QuestionFilled /></el-icon>
             </el-tooltip>
           </div>
-          <div class="mini-value warn">{{ data.summary?.missing_amount_count ?? 0 }}</div>
+          <div class="mini-value warn">{{ data.summary?.missing_amount_denominator ? data.summary.missing_amount_count : '—' }}</div>
+          <div v-if="!data.summary?.missing_amount_denominator" class="mini-note">无适用类型</div>
         </el-card>
       </el-col>
-      <el-col :span="4">
+      <el-col :xs="12" :sm="8" :md="4">
         <el-card shadow="hover" class="mini-card">
           <div class="mini-label">
             币种缺失
@@ -121,10 +130,11 @@
               <el-icon class="tip"><QuestionFilled /></el-icon>
             </el-tooltip>
           </div>
-          <div class="mini-value warn">{{ data.summary?.missing_currency_count ?? 0 }}</div>
+          <div class="mini-value warn">{{ data.summary?.missing_currency_denominator ? data.summary.missing_currency_count : '—' }}</div>
+          <div v-if="!data.summary?.missing_currency_denominator" class="mini-note">无适用类型</div>
         </el-card>
       </el-col>
-      <el-col :span="4">
+      <el-col :xs="12" :sm="8" :md="4">
         <el-card shadow="hover" class="mini-card">
           <div class="mini-label">
             未知币种金额
@@ -132,7 +142,8 @@
               <el-icon class="tip"><QuestionFilled /></el-icon>
             </el-tooltip>
           </div>
-          <div class="mini-value warn">{{ data.summary?.unknown_currency_amount_count ?? 0 }}</div>
+          <div class="mini-value warn">{{ data.summary?.missing_amount_denominator ? data.summary.unknown_currency_amount_count : '—' }}</div>
+          <div v-if="!data.summary?.missing_amount_denominator" class="mini-note">无适用类型</div>
         </el-card>
       </el-col>
     </el-row>
@@ -152,7 +163,7 @@
 
     <!-- ===== 图表区 ===== -->
     <el-row :gutter="16">
-      <el-col :span="12">
+      <el-col :xs="24" :sm="24" :md="12">
         <el-card shadow="never" class="chart-card">
           <template #header>
             <div class="card-header">
@@ -165,7 +176,7 @@
         </el-card>
       </el-col>
 
-      <el-col :span="12">
+      <el-col :xs="24" :sm="24" :md="12">
         <el-card shadow="never" class="chart-card">
           <template #header>
             <div class="card-header">
@@ -180,7 +191,7 @@
     </el-row>
 
     <el-row :gutter="16" class="row-gap">
-      <el-col :span="12">
+      <el-col :xs="24" :sm="24" :md="12">
         <el-card shadow="never" class="chart-card">
           <template #header>
             <div class="card-header">
@@ -196,11 +207,11 @@
             </div>
             <div ref="amountRef" class="chart-box" />
           </template>
-          <el-empty v-else :description="amountCurrencies.length ? '该币种当前无金额数据' : '当前筛选无金额数据'" :image-size="60" />
+          <el-empty v-else :description="amountEmptyReason" :image-size="60" />
         </el-card>
       </el-col>
 
-      <el-col :span="12">
+      <el-col :xs="24" :sm="24" :md="12">
         <el-card shadow="never" class="chart-card">
           <template #header>
             <div class="card-header">
@@ -273,6 +284,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { Search, RefreshLeft } from '@element-plus/icons-vue'
 import { getAnalytics, getAnalyticsDetails } from '../api/index.js'
+import { DOCUMENTS_CHANGED } from '../documentEvents.js'
 import { ElMessage } from 'element-plus'
 // ECharts 按需引入：只打包用到的图表与组件，构建产物里不含任何 CDN 资源
 import * as echarts from 'echarts/core'
@@ -292,12 +304,29 @@ const filters = reactive({
   reviewed: null,           // 'true' / 'false'（字符串避免空值歧义）
 })
 const dateRange = ref(null)
+const filtersOpen = ref(false)
 const amountCurrency = ref('CNY')
 const rankRole = ref('buyer')
 
 const data = reactive({
   summary: null, monthly: [], type_counts: [], amounts: [],
   party_ranking: { items: [] }, warnings: [],
+})
+const otherCount = computed(() => data.type_counts.find(item => item.doc_type === 'other')?.doc_count ?? 0)
+const qualityMessage = computed(() => {
+  const summary = data.summary
+  if (!summary) return ''
+  const issues = []
+  if (otherCount.value) issues.push(`${otherCount.value} 份类型为“其他”，金额不参与发票/合同汇总`)
+  if (summary.unreviewed_count) issues.push(`${summary.unreviewed_count} 份尚未校对`)
+  if (summary.missing_date_count) issues.push(`${summary.missing_date_count} 份缺少业务日期`)
+  return issues.join('；')
+})
+const amountEmptyReason = computed(() => {
+  if (amountCurrencies.value.length) return '该币种当前无可统计金额'
+  if ((data.summary?.missing_amount_denominator ?? 0) === 0) return '当前没有发票或合同；“其他”不参与金额统计'
+  if ((data.summary?.unknown_currency_amount_count ?? 0) > 0) return '金额存在，但币种未确认；按口径不提供合计'
+  return '发票或合同尚无有效业务金额，请先核对字段'
 })
 
 function queryParams() {
@@ -581,11 +610,13 @@ async function openDetails(extra) {
 
 onMounted(() => {
   window.addEventListener('resize', _onResize)
+  window.addEventListener(DOCUMENTS_CHANGED, load)
   load()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', _onResize)
+  window.removeEventListener(DOCUMENTS_CHANGED, load)
   Object.values(charts).forEach(c => { try { c.dispose() } catch (e) { /* noop */ } })
 })
 
@@ -596,7 +627,6 @@ watch(amountCurrency, async () => {
   renderRank()
 })
 
-defineExpose({ refresh: load })
 </script>
 
 <style scoped>
@@ -607,6 +637,8 @@ defineExpose({ refresh: load })
 .filter-card { margin-bottom: 12px; }
 .filter-form { margin-top: 4px; }
 .filter-note { margin-top: 4px; }
+.quality-alert { margin-bottom: 12px; }
+.mobile-filter-toggle { display: none; }
 
 .stat-row { margin-bottom: 12px; }
 .mini-card { text-align: center; }
@@ -619,6 +651,7 @@ defineExpose({ refresh: load })
   gap: 3px;
 }
 .mini-value { font-size: 22px; font-weight: 600; color: #303133; margin-top: 4px; }
+.mini-note { font-size: 11px; color: #909399; margin-top: 2px; }
 .mini-value.warn { color: #E6A23C; }
 .tip { color: #C0C4CC; cursor: help; }
 
@@ -633,4 +666,22 @@ defineExpose({ refresh: load })
 .drawer-summary { margin-bottom: 10px; font-size: 13px; color: #606266; }
 .drawer-total { margin-left: 6px; }
 .muted { color: #C0C4CC; }
+@media (max-width: 767px) {
+  .filter-card :deep(.el-card__header), .filter-card :deep(.el-card__body) { padding: 10px; }
+  .card-header { flex-wrap: wrap; }
+  .card-subtitle { line-height: 1.4; }
+  .mobile-filter-toggle { display: inline-flex; margin-left: auto; }
+  .filter-form { display: none; }
+  .filter-form.is-open { display: block; }
+  .filter-form :deep(.el-form-item) { width: 100%; margin-right: 0; }
+  .filter-form :deep(.el-form-item__content) { width: 100%; }
+  .filter-form :deep(.el-select), .filter-form :deep(.el-date-editor) { width: 100% !important; max-width: 100%; }
+  .filter-form :deep(.el-radio-group) { flex-wrap: wrap; }
+  .stat-row :deep(.el-col) { margin-bottom: 8px; }
+  .mini-card :deep(.el-card__body) { padding: 10px 6px; }
+  .mini-label { font-size: 11px; }
+  .mini-value { font-size: 18px; }
+  .chart-card { margin-bottom: 10px; }
+  .chart-box { height: 220px; }
+}
 </style>

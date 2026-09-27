@@ -278,7 +278,10 @@
     </div>
 
     <!-- ============ 右：检索过程侧栏 ============ -->
-    <aside class="qa-trace">
+    <button class="trace-toggle" type="button" :aria-expanded="showMobileTrace" @click="showMobileTrace = !showMobileTrace">
+      {{ showMobileTrace ? '收起检索过程' : '查看检索过程' }}
+    </button>
+    <aside class="qa-trace" :class="{ 'mobile-open': showMobileTrace }">
       <RetrievalTrace
         :result="currentResult"
         :loading="sending"
@@ -302,7 +305,8 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { DOCUMENTS_CHANGED } from '../documentEvents.js'
 import { ElMessage } from 'element-plus'
 import {
   ragAsk,
@@ -331,6 +335,7 @@ const SAMPLES = [
 
 // ==================== 状态 ====================
 const showSettings = ref(false)
+const showMobileTrace = ref(false)
 const mode = ref('hybrid')
 const rewrite = ref(true)
 const multiTurn = ref(true)
@@ -613,11 +618,17 @@ onMounted(() => {
   loadConfig()
   loadIndexStatus()
   loadDocOptions()
+  window.addEventListener(DOCUMENTS_CHANGED, onDocumentsChanged)
 })
 
-// Returning from the editor may invalidate any conversation anchor. Keep the
-// displayed transcript, but do not silently reuse its old material as context.
-defineExpose({ refresh: () => { turns.value = []; loadConfig(); loadIndexStatus(); loadDocOptions() } })
+onUnmounted(() => window.removeEventListener(DOCUMENTS_CHANGED, onDocumentsChanged))
+
+function onDocumentsChanged() {
+  // Keep the visible transcript, but never reuse references from an old revision.
+  turns.value = []
+  loadIndexStatus()
+  loadDocOptions()
+}
 </script>
 
 <style scoped>
@@ -643,6 +654,7 @@ defineExpose({ refresh: () => { turns.value = []; loadConfig(); loadIndexStatus(
   flex-shrink: 0;
   min-height: 0;
 }
+.trace-toggle { display: none; }
 
 /* ============ 状态条 ============ */
 .qa-banner { padding: 10px 12px 0; flex-shrink: 0; }
@@ -893,11 +905,18 @@ defineExpose({ refresh: () => { turns.value = []; loadConfig(); loadIndexStatus(
 @media (max-width: 767px) {
   .qa-wrap { flex-direction: column; }
   .qa-main { min-height: 0; }
+  .trace-toggle {
+    display: block; width: 100%; padding: 7px 10px; border: 0;
+    border-top: 1px solid #e4e7ed; background: #edf4f4; color: #286e79;
+    font: inherit; font-size: 12px; font-weight: 600;
+  }
   .qa-trace {
     width: 100%;
-    height: 240px;
+    height: 0;
+    overflow: hidden;
     flex-shrink: 0;
   }
+  .qa-trace.mobile-open { height: min(36vh, 280px); overflow: auto; }
   .trace-panel { border-left: none; border-top: 1px solid #e4e7ed; }
   .qs-item > label { width: 100%; }
   .msg-bubble { max-width: calc(100% - 50px); }

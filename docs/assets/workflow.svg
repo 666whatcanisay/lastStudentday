@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="480" viewBox="0 0 1080 480" role="img" aria-labelledby="title desc">
+<title id="title">智能文档工作台的工作流</title><desc id="desc">原件经过本地识别与字段抽取，由人校对成为有效版本，再供统计、导出、检索问答使用；数据库与原件共同备份。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10" fill="#607d83"/></marker></defs>
+<rect width="1080" height="480" fill="#f6f8f7"/>
+<g font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" fill="#173c44">
+<text x="40" y="48" font-size="28" font-weight="600">从文件，到能核对、能交付、能查证的资料</text>
+<text x="40" y="80" font-size="17" fill="#51696f">OCR 读字 · 规则找字段 · 人确认事实 · 当前有效版本贯穿后续功能</text>
+<g fill="white" stroke="#b9ceca" stroke-width="1.5">
+<rect x="40" y="120" width="170" height="94" rx="12"/><rect x="245" y="120" width="170" height="94" rx="12"/>
+<rect x="450" y="120" width="170" height="94" rx="12"/><rect x="655" y="120" width="170" height="94" rx="12"/>
+<rect x="860" y="120" width="180" height="94" rx="12"/>
+<rect x="95" y="318" width="250" height="95" rx="12"/><rect x="415" y="318" width="250" height="95" rx="12"/><rect x="735" y="318" width="250" height="95" rx="12"/>
+</g>
+<g text-anchor="middle" font-size="21" font-weight="600"><text x="125" y="155">上传原件</text><text x="330" y="155">本地 OCR</text><text x="535" y="155">分类与字段</text><text x="740" y="155">原件对照校对</text><text x="950" y="155">有效版本</text><text x="220" y="354">统计与明细</text><text x="540" y="354">PDF / Excel 导出</text><text x="860" y="354">查证与问答</text></g>
+<g text-anchor="middle" font-size="16" fill="#51696f"><text x="125" y="186">格式 / 大小 / 内容去重</text><text x="330" y="186">图像准备 → 文字</text><text x="535" y="186">明确值才填写</text><text x="740" y="186">确认、修正、不猜填</text><text x="950" y="186">SQLite + 历史快照</text><text x="220" y="385">质量提示 / 同币种口径</text><text x="540" y="385">请求时锁定内容快照</text><text x="860" y="385">本地检索 → 可选云端生成</text></g>
+<g fill="none" stroke="#607d83" stroke-width="2" marker-end="url(#arrow)"><path d="M211 166H240"/><path d="M416 166H445"/><path d="M621 166H650"/><path d="M826 166H855"/><path d="M950 215V267H220V313"/><path d="M540 267V313"/><path d="M860 267V313"/></g>
+<text x="535" y="251" font-size="17" text-anchor="middle">修改有版本保护，索引与当前版本对应</text>
+<text x="540" y="455" font-size="17" text-anchor="middle" fill="#51696f">数据库 + 原件一起备份；删除先入回收站；恢复仅通过本机离线脚本</text>
+</g></svg>

@@ -4,9 +4,9 @@ OCR 文字识别引擎模块
 
 技术路线对应交付文档：
   - 基线模型：PaddleOCR lightweight 官方轻量预训练模型
-  - 模型转换：Paddle2ONNX 转为 ONNX 推理格式
-  - 量化加速：INT8 整型量化推理加速
-  RapidOCR 已内置 PaddleOCR 转 ONNX 的轻量化量化模型，直接满足以上要求
+  - 模型格式：使用 RapidOCR 已提供的 ONNX 模型，不宣称本项目自行训练/转换
+  - 本地推理：ONNX Runtime；不能仅凭 ONNX 格式断言 OCR 权重已 INT8 量化
+  向量检索使用的 INT8 模型是另一条独立链路。
 
 支持两种引擎后端：
   1. rapidocr — RapidOCR (ONNX Runtime, 默认)
@@ -34,7 +34,7 @@ def _init_rapidocr():
     """初始化 RapidOCR 引擎（ONNX Runtime 后端）"""
     try:
         from rapidocr_onnxruntime import RapidOCR
-        # 使用默认轻量化模型（已含 ONNX INT8 量化优化）
+        # 使用包内默认 ONNX 模型；不把推理格式误当作量化证据。
         engine = RapidOCR()
         logger.info("OCR 引擎初始化成功: RapidOCR (ONNX Runtime)")
         return ("rapidocr", engine)
@@ -184,7 +184,7 @@ def get_engine_info() -> dict:
         "rapidocr": {
             "engine_type": "rapidocr",
             "name": "RapidOCR (ONNX Runtime)",
-            "description": "PaddleOCR 轻量化模型 → ONNX 格式 → INT8 量化推理",
+            "description": "PaddleOCR 系列轻量预训练模型，使用 ONNX Runtime 本地推理",
             "optimized": True,
         },
         "tesseract": {

@@ -140,6 +140,7 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import { notifyDocumentsChanged } from '../documentEvents.js'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getDocumentList, restoreDocument, permanentDeleteDocument,
@@ -196,6 +197,7 @@ async function restore(row) {
     await restoreDocument(row.id)
     ElMessage.success('已恢复；系统会重新校验该文档的索引')
     loadRecycle()
+    notifyDocumentsChanged()
   } catch (e) {
     ElMessage.error(`恢复失败：${errMsg(e)}`)
   }
@@ -214,6 +216,7 @@ async function permanentDelete(row) {
     await permanentDeleteDocument(row.id)
     ElMessage.success('已永久删除')
     loadRecycle()
+    notifyDocumentsChanged()
   } catch (e) {
     // 后端在"原件删除失败/路径越界"时不返回完全成功，这里必须如实提示
     ElMessage.error(`永久删除未完成：${errMsg(e)}`)

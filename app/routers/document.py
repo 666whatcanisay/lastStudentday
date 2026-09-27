@@ -1,12 +1,6 @@
 """
-文档管理路由
-  GET    /api/document/stats                      简单统计（保留兼容，正式统计见 /analytics）
-  GET    /api/document/analytics                  分类统计（唯一口径，图表数据源）
-  GET    /api/document/analytics/details          统计明细穿透（与图表同过滤）
+文档管理路由；统计与导出已分到独立路由模块，但外部 URL 不变。
   GET    /api/document/list                       分页列表（摘要，支持类型/校对/回收站过滤）
-  GET    /api/document/export                     导出 Excel（按类型分工作表）
-  GET    /api/document/export/report              单份 PDF 识别结果报告（可附原件）
-  GET    /api/document/export/reports             批量 PDF 报告 ZIP（含 manifest）
   GET    /api/document/{doc_id}                   详情（原始/有效文本、类型字段、版本、预览 URL）
   PATCH  /api/document/{doc_id}                   编辑（乐观并发 409 + 版本发布）
   GET    /api/document/{doc_id}/revisions         版本历史摘要
@@ -15,20 +9,16 @@
   POST   /api/document/{doc_id}/restore           从回收站恢复
   DELETE /api/document/{doc_id}/permanent         永久删除（仅回收站条目）
 
-⚠️ 路由顺序：固定路径必须在 /{doc_id} 动态路径之前注册（FastAPI 按声明顺序匹配）。
+⚠️ main.py 必须先注册统计与导出路由，再注册这里的 /{doc_id} 动态路径。
 """
-import io
 import logging
-import shutil
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
-from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, func
+from sqlalchemy import or_
 
 from app.config import UPLOAD_DIR
 from app.database import get_db
@@ -40,8 +30,6 @@ from app.schemas import (
 from app.services import revisions as rev_svc
 from app.services import field_registry as registry
 from app.services.extractor import extract_for_type
-from app.services import analytics
-from app.services import exporter
 from app.services.backup_gate import GATE, BackupInProgress
 
 router = APIRouter(prefix="/api/document", tags=["文档管理"])
@@ -114,106 +102,6 @@ def _detail_dict(doc: DocumentInfo, db: Session) -> dict:
 
 # ==================== 固定路由（必须先于 /{doc_id}） ====================
 
-@router.get("/stats", response_model=ApiResponse)
-def get_document_stats(db: Session = Depends(get_db)):
-    """简单统计（保留兼容）：总数/成功数/平均耗时；排除回收站。"""
-    base = db.query(DocumentInfo).filter(DocumentInfo.deleted_at.is_(None))
-    total = base.count()
-    success_count = base.filter(DocumentInfo.status == 1).count()
-    avg_cost = db.query(func.avg(DocumentInfo.infer_cost)).filter(
-        DocumentInfo.deleted_at.is_(None),
-        DocumentInfo.status == 1, DocumentInfo.infer_cost != None
-    ).scalar()
-    avg_cost = round(avg_cost, 1) if avg_cost else 0.0
-
-    return ApiResponse.success(data={
-        "total": total,
-        "success": success_count,
-        "avg_cost": avg_cost,
-    })
-
-
-@router.get("/analytics", response_model=ApiResponse)
-def get_document_analytics(
-    doc_type: Optional[str] = Query(None, description="类型：invoice/contract/other"),
-    date_from: Optional[str] = Query(None, description="业务日期起（YYYY-MM-DD，含当天）"),
-    date_to: Optional[str] = Query(None, description="业务日期止（YYYY-MM-DD，含当天）"),
-    date_unknown: Optional[bool] = Query(None, description="true=只看日期未知；false=排除日期未知"),
-    currency: Optional[str] = Query(None, description="币种 ISO 代码（CNY/USD…），或 UNKNOWN=只看币种缺失"),
-    reviewed: Optional[bool] = Query(None, description="校对状态过滤"),
-    party_role: Optional[str] = Query(None,
-                                      description="排行角色（一次一个）：buyer/seller/party_a/party_b"),
-    db: Session = Depends(get_db),
-):
-    """
-    分类统计（任务书 3.4 唯一口径）。
-
-    与明细穿透 `/analytics/details` 共用 `analytics.apply_filters`，
-    保证「图与明细同口径」。金额一律为十进制字符串，前端只展示不重算。
-    """
-    import re
-    if doc_type and doc_type not in registry.DOC_TYPES:
-        return ApiResponse.error(
-            msg=f"不支持的文档类型: {doc_type}（可选 {', '.join(registry.DOC_TYPES)}）", code=400)
-    for name, val in (("date_from", date_from), ("date_to", date_to)):
-        if val and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", val.strip()):
-            return ApiResponse.error(msg=f"{name} 需为 YYYY-MM-DD 格式: {val}", code=400)
-
-    filters = {
-        "doc_type": doc_type,
-        "date_from": date_from,
-        "date_to": date_to,
-        "date_unknown": date_unknown,
-        "currency": (currency or "").strip().upper() or None,
-        "reviewed": reviewed,
-    }
-    docs = analytics.apply_filters(analytics.load_valid_docs(db), **filters)
-    data = analytics.build_analytics(docs, filters=filters, party_role=party_role)
-    return ApiResponse.success(data=data)
-
-
-@router.get("/analytics/details", response_model=ApiResponse)
-def get_document_analytics_details(
-    doc_type: Optional[str] = Query(None, description="类型：invoice/contract/other"),
-    date_from: Optional[str] = Query(None, description="业务日期起（含当天）"),
-    date_to: Optional[str] = Query(None, description="业务日期止（含当天）"),
-    date_unknown: Optional[bool] = Query(None),
-    currency: Optional[str] = Query(None),
-    reviewed: Optional[bool] = Query(None),
-    party_role: Optional[str] = Query(None, description="排行角色，用于点某个交易对象"),
-    party: Optional[str] = Query(None, description="交易对象名称（配合 party_role）"),
-    month: Optional[str] = Query(None, description="月度分组键 2026-01，或 unknown"),
-    require_amount: bool = Query(False, description="true=只要金额与币种都有效的文档（金额图穿透）"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
-    db: Session = Depends(get_db),
-):
-    """
-    统计明细穿透：与图表**同一套过滤条件**，可再叠加 month/party/require_amount。
-
-    amount_totals 按币种分组给出明细合计 —— 点击金额图时应与图上数字一致。
-    """
-    import re
-    if doc_type and doc_type not in registry.DOC_TYPES:
-        return ApiResponse.error(
-            msg=f"不支持的文档类型: {doc_type}（可选 {', '.join(registry.DOC_TYPES)}）", code=400)
-    for name, val in (("date_from", date_from), ("date_to", date_to)):
-        if val and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", val.strip()):
-            return ApiResponse.error(msg=f"{name} 需为 YYYY-MM-DD 格式: {val}", code=400)
-
-    docs = analytics.apply_filters(
-        analytics.load_valid_docs(db),
-        doc_type=doc_type, date_from=date_from, date_to=date_to,
-        date_unknown=date_unknown,
-        currency=(currency or "").strip().upper() or None,
-        reviewed=reviewed, month=month, require_amount=require_amount,
-        party_role=party_role, party=party,
-    )
-    data = analytics.build_details(docs, page=page, page_size=page_size,
-                                   party_role=party_role)
-    return ApiResponse.success(data=data)
-
-
 @router.get("/list", response_model=ApiResponse)
 def get_document_list(
     keyword: Optional[str] = Query(None, description="搜索关键字（文件名或识别文本）"),
@@ -274,176 +162,6 @@ def get_document_list(
         "page_size": page_size,
         "items": [_list_item(d) for d in docs],
     })
-
-
-# ==================== 导出（Excel / PDF 报告 / 批量 ZIP） ====================
-
-def _parse_doc_ids(doc_ids: str) -> List[int]:
-    ids = []
-    for x in (doc_ids or "").split(","):
-        x = x.strip()
-        if x.isdigit():
-            ids.append(int(x))
-    return ids
-
-
-def _prepare_export_items(db: Session, doc_ids: List[int]) -> List[Dict]:
-    """
-    请求开始时空一次性锁定每份文档的**有效版本快照**。
-
-    这是「正文和字段不能在生成途中混用不同版本」的实现方式：
-    快照在这里取出来，后续 PDF/Excel 只读这份内存数据，不再回查数据库。
-    """
-    items: List[Dict] = []
-    for did in doc_ids:
-        doc = db.query(DocumentInfo).filter(DocumentInfo.id == did).first()
-        entry: Dict = {"doc_id": did, "doc": doc}
-        if not doc:
-            entry["error"] = "文档不存在"
-        elif doc.deleted_at is not None:
-            entry["error"] = "文档在回收站，不可导出"
-        else:
-            snap = rev_svc.get_effective_snapshot(db, doc.id)
-            if not snap:
-                entry["error"] = "该文档没有有效版本，无法导出"
-            else:
-                entry["snap"] = snap
-                entry["fields"] = rev_svc.snapshot_fields(snap)
-        items.append(entry)
-    return items
-
-
-def _export_rows(items: List[Dict]) -> List[Dict]:
-    """导出项 → Excel 行（同样只吃锁定的快照）"""
-    rows = []
-    for it in items:
-        if it.get("error") or not it.get("snap"):
-            continue
-        doc, snap = it["doc"], it["snap"]
-        rows.append({
-            "doc_id": doc.id,
-            "file_name": doc.file_name,
-            "file_type": doc.file_type,
-            "upload_time": doc.upload_time,
-            "doc_type": snap.doc_type or "other",
-            "revision": snap.revision,
-            "reviewed": bool(doc.current_revision is not None
-                             and doc.reviewed_revision == doc.current_revision),
-            "fields": it["fields"],
-            "effective_text": snap.effective_text,
-        })
-    return rows
-
-
-def _attachment(filename: str):
-    from urllib.parse import quote
-    return f"attachment; filename*=UTF-8''{quote(filename)}"
-
-
-@router.get("/export", response_model=None)
-def export_documents(
-    doc_ids: str = Query(..., description="文档ID数组，逗号分隔，如 1,2,3"),
-    db: Session = Depends(get_db),
-):
-    """
-    导出 Excel：按类型分工作表（发票/合同/其他，按需生成），
-    金额为数值单元格、币种独立列，文本按字符串写入（防公式注入）。
-    """
-    id_list = _parse_doc_ids(doc_ids)
-    if not id_list:
-        return ApiResponse.error(msg="请提供有效的文档ID", code=400)
-
-    items = _prepare_export_items(db, id_list)
-    rows = _export_rows(items)
-    if not rows:
-        failed = "；".join(f"{i['doc_id']}: {i['error']}" for i in items if i.get("error"))
-        return ApiResponse.error(msg=f"没有可导出的有效文档（{failed or '无有效版本'}）", code=400)
-
-    data = exporter.build_excel_workbook(rows=rows)
-    return StreamingResponse(
-        io.BytesIO(data),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": _attachment(f"文档识别结果导出_{len(rows)}条.xlsx")},
-    )
-
-
-@router.get("/export/report", response_model=None)
-def export_single_report(
-    doc_id: int = Query(..., description="文档ID"),
-    attach_original: bool = Query(False, description="是否附加原件（缺失则该份导出失败）"),
-    background: BackgroundTasks = None,
-    db: Session = Depends(get_db),
-):
-    """单份 PDF 识别结果报告（A4，含字段/有效全文/版本/页码，可选附原件）"""
-    items = _prepare_export_items(db, [doc_id])
-    it = items[0]
-    if it.get("error"):
-        return ApiResponse.error(msg=it["error"], code=400)
-
-    work_root = exporter.make_work_root()
-    tmp_dir = Path(tempfile.mkdtemp(prefix=exporter.EXPORT_PREFIX, dir=str(work_root)))
-    try:
-        data = exporter.build_report_pdf(
-            doc=it["doc"], snap=it["snap"], fields=it["fields"],
-            attach_original=attach_original, tmp_dir=tmp_dir)
-    except exporter.ExportError as e:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return ApiResponse.error(msg=str(e), code=400)
-    except Exception as e:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        logger.error(f"文档 {doc_id} 报告导出失败: {e}", exc_info=True)
-        return ApiResponse.error(msg=f"报告生成失败：{str(e)[:200]}", code=500)
-    finally:
-        if background is not None:
-            background.add_task(shutil.rmtree, str(tmp_dir), True)
-
-    name = f"doc_{doc_id}_r{it['snap'].revision}_报告.pdf"
-    return StreamingResponse(
-        io.BytesIO(data),
-        media_type="application/pdf",
-        headers={"Content-Disposition": _attachment(name)},
-    )
-
-
-@router.get("/export/reports", response_model=None)
-def export_batch_reports(
-    doc_ids: str = Query(..., description="文档ID数组，逗号分隔；最多 20 份"),
-    attach_original: bool = Query(False, description="是否附加原件"),
-    db: Session = Depends(get_db),
-):
-    """
-    批量导出：一份一个 PDF + export_manifest.json（记录每份 revision 与失败原因）。
-    部分成功可下载；全部失败返回错误，不产出空 ZIP。
-    """
-    id_list = _parse_doc_ids(doc_ids)
-    if not id_list:
-        return ApiResponse.error(msg="请提供有效的文档ID", code=400)
-    if len(id_list) > exporter.MAX_BATCH:
-        return ApiResponse.error(
-            msg=f"单次最多导出 {exporter.MAX_BATCH} 份，当前 {len(id_list)} 份，请分批导出",
-            code=400)
-
-    items = _prepare_export_items(db, id_list)
-    data, manifest = exporter.build_reports_zip(
-        items=items, attach_original=attach_original,
-        work_root=exporter.make_work_root())
-
-    if manifest["success_count"] == 0:
-        reasons = "；".join(
-            f"#{m['doc_id']} {m['reason']}" for m in manifest["items"])
-        return ApiResponse.error(
-            msg=f"全部 {manifest['failed_count']} 份导出失败：{reasons[:600]}", code=400)
-
-    name = f"文档报告批量导出_{manifest['success_count']}份.zip"
-    return StreamingResponse(
-        io.BytesIO(data),
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": _attachment(name),
-            # 失败份数直接放响应头，前端不用解包就能提示
-            "X-Export-Failed": str(manifest["failed_count"]),
-        },
-    )
 
 
 # ==================== 编辑辅助 ====================
@@ -561,6 +279,8 @@ def patch_document(doc_id: int, body: DocumentPatchRequest,
             code=400)
 
     type_changed = target_type != (doc.doc_type or "other")
+    allowed_keys = set(registry.spec_map(target_type)) | PUBLIC_FIELD_KEYS
+    legacy_fields_removed = any(f.get("field_key") not in allowed_keys for f in cur_fields)
     new_text = body.effective_text if body.effective_text is not None else cur_text
 
     # ---------- 目标版本的字段集合 ----------
@@ -570,7 +290,9 @@ def patch_document(doc_id: int, body: DocumentPatchRequest,
                 if f.get("field_key") in PUBLIC_FIELD_KEYS}
         fields = _merge_public_fields(extract_for_type(new_text, target_type), keep)
     else:
-        fields = [dict(f) for f in cur_fields]
+        # Retired legacy rows without stable keys stay in historical snapshots,
+        # but must not leak into a newly reviewed effective version.
+        fields = [dict(f) for f in cur_fields if f.get("field_key") in allowed_keys]
         # 注册表升级后旧快照可能缺字段：补齐为空值，不回放旧版本的抽取结果
         specmap = registry.spec_map(target_type)
         have = {f.get("field_key") for f in fields}
@@ -615,7 +337,7 @@ def patch_document(doc_id: int, body: DocumentPatchRequest,
     # ---------- 是否真的有变化 ----------
     text_changed = (new_text or "") != (cur_text or "")
     fields_changed = _field_change_map(fields) != _field_change_map(cur_fields)
-    changed = text_changed or fields_changed or type_changed
+    changed = text_changed or fields_changed or type_changed or legacy_fields_removed
 
     if not changed:
         data = {**_detail_dict(doc, db), "revision_created": False}

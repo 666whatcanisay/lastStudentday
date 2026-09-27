@@ -2,7 +2,7 @@
 轻量化智能文档OCR+文本信息抽取系统
 FastAPI 后端服务入口
 
-启动: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+启动: scripts/start_all.bat（单进程，仅监听本机；禁止 --reload）
 访问: http://127.0.0.1:8000
 API文档: http://127.0.0.1:8000/docs
 """
@@ -21,7 +21,7 @@ from app.config import (
     APP_NAME, APP_VERSION, STATIC_DIR, MAX_FILE_SIZE, MAX_UPLOAD_BODY_SIZE,
 )
 from app.database import init_database
-from app.routers import file, ocr, document, rag, maintenance, auth
+from app.routers import file, ocr, document, document_analytics, document_export, rag, maintenance, auth
 from app.services.local_security import (
     LOCAL_CORS_ORIGINS, local_security_middleware,
 )
@@ -192,6 +192,9 @@ def shutdown_event():
 # ==================== 注册路由 ====================
 app.include_router(file.router)
 app.include_router(ocr.router)
+# Fixed /api/document paths must be registered before /{doc_id}.
+app.include_router(document_analytics.router)
+app.include_router(document_export.router)
 app.include_router(document.router)
 app.include_router(rag.router)
 app.include_router(maintenance.router)

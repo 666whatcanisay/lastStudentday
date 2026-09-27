@@ -3,7 +3,7 @@
 
 选型：BAAI/bge-small-zh-v1.5 的 ONNX 版（来自 Xenova/bge-small-zh-v1.5）
   - 512 维 / INT8 量化后约 23MB / CPU 单条推理约 20ms
-  - 采用 INT8 量化版，与项目「PaddleOCR → ONNX → INT8 量化」的技术路线完全一致
+  - 采用已发布的 INT8 向量模型，与 OCR 复用 ONNX Runtime；不代表 OCR 权重也是 INT8
   - 注意：官方仓库 BAAI/bge-small-zh-v1.5 只有 PyTorch 格式，没有 ONNX，
     因此使用 Xenova 转换好的 ONNX 版本（含 INT8 量化）
 

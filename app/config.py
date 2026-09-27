@@ -8,6 +8,8 @@ from pathlib import Path
 # ==================== 路径配置 ====================
 # 项目根目录
 BASE_DIR = Path(__file__).resolve().parent.parent
+from app.local_settings import load_local_environment
+load_local_environment(BASE_DIR)
 
 # 数据根目录：可用环境变量 DOC_OCR_DATA_DIR 覆盖，供测试/维护脚本使用隔离目录。
 # 未设置时与历史布局完全一致（uploads/ 与 data/ 均在项目根下），保证存量部署零迁移。
@@ -60,7 +62,7 @@ DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 
 # ==================== 应用配置 ====================
 APP_NAME = "轻量化智能文档OCR+文本信息抽取系统"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 API_PREFIX = "/api"
 
 # ==================== 正则抽取配置 ====================
@@ -387,24 +389,7 @@ def load_dotenv_if_exists():
     用于把 LLM_API_KEY 等敏感配置从环境变量注入，避免写入代码或提交到仓库。
     不引入 python-dotenv 依赖，仅支持 KEY=VALUE 的简单格式。
     """
-    if os.getenv('DOC_OCR_SKIP_DOTENV') == '1':
-        return
-    env_file = BASE_DIR / ".env"
-    if not env_file.exists():
-        return
-    try:
-        with open(env_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key, value = key.strip(), value.strip().strip('"').strip("'")
-                # 已存在的环境变量优先，不被 .env 覆盖
-                if key and key not in os.environ:
-                    os.environ[key] = value
-    except Exception:
-        pass
+    load_local_environment(BASE_DIR)
 
 
 load_dotenv_if_exists()

@@ -1,4 +1,6 @@
-# 轻量化智能文档 OCR 与信息抽取系统
+# 轻量化智能文档 OCR 与信息抽取系统 · v1.1.0
+
+接手或准备演讲，先看 [接手入口](docs/HANDOVER.md)。离线打开 `docs/PROJECT_GUIDE.html` 可按“功能 → 工作流 → 30分钟上手 → 上台讲解”阅读；正式交付状态见 [验收说明](docs/FINAL_DELIVERY.md)。
 
 这是一个在 Windows 本机运行的文档处理项目：上传图片或 PDF，经预处理与 OCR 识别后抽取发票、合同等结构化字段，并支持人工校对、版本记录、统计图表、PDF/Excel 导出和带原文引用的检索问答。后端使用 FastAPI、SQLite、RapidOCR 与本地向量模型；前端使用 Vue 3、Element Plus 和 ECharts。核心流程可在 CPU 上运行，不要求 GPU。
 

@@ -4,11 +4,7 @@
     <el-header class="app-header">
       <div class="header-left">
         <el-icon class="header-icon"><Document /></el-icon>
-        <span class="header-title">轻量化智能文档OCR+文本信息抽取系统</span>
-        <el-tag size="small" type="info" class="version-tag">v1.0.0</el-tag>
-        <el-tag size="small" type="success" effect="plain" class="version-tag">
-          本地构建版 (Vite)
-        </el-tag>
+        <span class="header-title">智能文档工作台</span>
       </div>
       <div class="header-right">
         <el-tag v-if="auth.demoMode && auth.authenticated" size="small" effect="dark">
@@ -17,11 +13,8 @@
         <el-button v-if="auth.demoMode && auth.authenticated" size="small" text style="color: #fff;" @click="signOut">
           退出登录
         </el-button>
-        <el-tag v-if="auth.authenticated" :type="ocrEngine.optimized ? 'success' : 'warning'" size="small" effect="dark">
-          {{ ocrEngine.name || '引擎加载中...' }}
-        </el-tag>
-        <el-button v-if="auth.authenticated" size="small" text style="color: #fff;" @click="showEngineInfo = true">
-          <el-icon><InfoFilled /></el-icon> 引擎详情
+        <el-button v-if="auth.authenticated" size="small" text class="header-link" @click="showEngineInfo = true">
+          <el-icon><InfoFilled /></el-icon> 系统信息
         </el-button>
       </div>
     </el-header>
@@ -47,43 +40,43 @@
           </el-form>
         </el-card>
       </div>
-      <el-tabs v-else v-model="activeTab" class="main-tabs" @tab-change="onTabChange">
+      <el-tabs v-else v-model="activeTab" class="main-tabs">
         <el-tab-pane name="docs" class="pane-scroll">
           <template #label>
             <span class="tab-label"><el-icon><Files /></el-icon> 文档管理</span>
           </template>
-          <DocManager ref="docManagerRef" :is-admin="auth.role === 'admin'" />
+          <DocManager :is-admin="auth.role === 'admin'" />
         </el-tab-pane>
 
         <el-tab-pane name="analytics" class="pane-scroll" lazy>
           <template #label>
             <span class="tab-label"><el-icon><DataAnalysis /></el-icon> 统计</span>
           </template>
-          <AnalyticsPanel ref="analyticsRef" />
+          <AnalyticsPanel />
         </el-tab-pane>
 
         <el-tab-pane name="qa" class="pane-fit" lazy>
           <template #label>
             <span class="tab-label">
               <el-icon><MagicStick /></el-icon> 智能问答
-              <el-tag size="small" type="success" effect="plain" class="tab-badge">RAG</el-tag>
             </span>
           </template>
-          <QaPanel ref="qaPanelRef" :is-admin="auth.role === 'admin'" />
+          <QaPanel :is-admin="auth.role === 'admin'" />
         </el-tab-pane>
 
         <el-tab-pane v-if="auth.role === 'admin'" name="data" class="pane-scroll" lazy>
           <template #label>
             <span class="tab-label"><el-icon><Coin /></el-icon> 数据管理</span>
           </template>
-          <DataManager ref="dataManagerRef" />
+          <DataManager />
         </el-tab-pane>
       </el-tabs>
     </el-main>
 
     <!-- ========== OCR 引擎信息对话框 ========== -->
-    <el-dialog v-model="showEngineInfo" title="OCR 引擎信息" width="500px">
+    <el-dialog v-model="showEngineInfo" title="系统信息" width="500px">
       <el-descriptions :column="1" border>
+        <el-descriptions-item label="版本">v{{ systemVersion }} · 本地构建版</el-descriptions-item>
         <el-descriptions-item label="引擎名称">{{ ocrEngine.name }}</el-descriptions-item>
         <el-descriptions-item label="技术方案">{{ ocrEngine.description }}</el-descriptions-item>
         <el-descriptions-item label="轻量化优化">
@@ -97,7 +90,7 @@
         <h4>轻量化优化技术路线</h4>
         <el-steps direction="vertical" :active="4" simple>
           <el-step title="基线模型" description="PaddleOCR lightweight 官方轻量预训练模型" />
-          <el-step title="模型转换" description="Paddle2ONNX 转为通用 ONNX 推理格式" />
+          <el-step title="推理格式" description="使用已发布的 ONNX 模型进行本地推理" />
           <el-step title="本地模型" description="OCR 使用本地 ONNX 模型，向量模型使用 INT8" />
           <el-step title="流水线优化" description="简化推理流水线，剔除冗余算子" />
           <el-step title="实际性能" description="以当前机器、文档和测试记录为准" />
@@ -118,10 +111,6 @@ const DataManager = defineAsyncComponent(() => import('./components/DataManager.
 
 // ==================== 页签 ====================
 const activeTab = ref('docs')
-const docManagerRef = ref(null)
-const analyticsRef = ref(null)
-const qaPanelRef = ref(null)
-const dataManagerRef = ref(null)
 const auth = reactive({ ready: false, demoMode: false, authenticated: false, role: null })
 const password = ref('')
 const signingIn = ref(false)
@@ -179,22 +168,9 @@ function authExpired() {
   }
 }
 
-/**
- * 切页签时刷新对侧数据 —— 各页签存在真实的数据耦合：
- *   · 在「文档管理」上传/识别了文档 → 问答侧需要知道有新文档待索引
- *   · 在「智能问答」建了索引        → 文档管理侧不需要变，但刷新无副作用
- *   · 「统计」必须实时重算          → 编辑/删除/恢复后不保留旧统计缓存（任务书 3.4）
- * 不刷新会导致「刚传的文档检索不到」「改了金额统计不变」这种让人困惑的现象。
- */
-function onTabChange(name) {
-  if (name === 'qa') qaPanelRef.value?.refresh()
-  else if (name === 'analytics') analyticsRef.value?.refresh()
-  else if (name === 'data') dataManagerRef.value?.refresh()
-  else docManagerRef.value?.refresh()
-}
-
 // ==================== OCR 引擎信息 ====================
 const showEngineInfo = ref(false)
+const systemVersion = ref('未知')
 // optimized: null = 尚未取到引擎信息（未知）。不要用 false 作默认值 ——
 // 那样首屏会先把「未知」误显示成「模拟引擎 (Mock)」闪一下。
 const ocrEngine = reactive({ name: '', description: '', optimized: null })
@@ -202,6 +178,7 @@ const ocrEngine = reactive({ name: '', description: '', optimized: null })
 async function fetchHealth() {
   try {
     const res = await getHealth()
+    systemVersion.value = res.data.version || '未知'
     ocrEngine.name = res.data.ocr_engine.name
     ocrEngine.description = res.data.ocr_engine.description
     ocrEngine.optimized = res.data.ocr_engine.optimized
@@ -228,30 +205,30 @@ onUnmounted(() => window.removeEventListener('doc-ocr-auth-expired', authExpired
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #f0f2f5;
+  background: #f4f7f6;
 }
 
 /* ========== 导航栏 ========== */
 .app-header {
-  background: linear-gradient(135deg, #409EFF 0%, #36cfc9 100%);
-  color: #fff;
+  background: #173c44;
+  color: #f8fcfa;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 24px;
   height: 56px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  border-bottom: 1px solid #dce7e4;
 }
 .header-left {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.header-icon { font-size: 22px; }
+.header-icon { font-size: 21px; color: #93d4ce; }
 .header-title {
   font-size: 17px;
   font-weight: 600;
-  letter-spacing: 1px;
+  letter-spacing: .3px;
 }
 .version-tag {
   background: rgba(255, 255, 255, 0.2);
@@ -263,6 +240,7 @@ onUnmounted(() => window.removeEventListener('doc-ocr-auth-expired', authExpired
   align-items: center;
   gap: 12px;
 }
+.header-link { color: #f8fcfa; }
 
 /* ========== 主内容 ========== */
 .app-main {
@@ -320,10 +298,6 @@ onUnmounted(() => window.removeEventListener('doc-ocr-auth-expired', authExpired
   align-items: center;
   gap: 5px;
 }
-.tab-badge {
-  transform: scale(0.82);
-  margin-left: 2px;
-}
 
 /* ========== 引擎信息 ========== */
 .engine-tech h4 { margin-bottom: 12px; }
@@ -340,5 +314,17 @@ onUnmounted(() => window.removeEventListener('doc-ocr-auth-expired', authExpired
     text-overflow: ellipsis;
   }
   .version-tag { display: none; }
+}
+@media (max-width: 600px) {
+  .app-header { height: 50px; padding: 0 12px; }
+  .header-title { font-size: 14px; }
+  .header-right { gap: 3px; }
+  .header-right :deep(.el-tag) { display: none; }
+  .header-right :deep(.el-button) { padding: 4px; font-size: 12px; }
+  .app-main { padding: 8px 10px 10px; }
+  .main-tabs :deep(.el-tabs__nav-wrap) { overflow: auto; }
+  .main-tabs :deep(.el-tabs__nav-wrap::after) { display: none; }
+  .main-tabs :deep(.el-tabs__item) { padding: 0 10px; font-size: 13px; }
+  .tab-label { gap: 3px; }
 }
 </style>

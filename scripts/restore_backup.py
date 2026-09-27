@@ -19,6 +19,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+from app.local_settings import load_local_environment
+load_local_environment(PROJECT_ROOT)
 from app.services.runtime_guard import DataDirectoryLock, atomic_json, process_identity
 
 LOG_NAME = 'restore_log.json'

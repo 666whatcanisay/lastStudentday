@@ -13,7 +13,7 @@ python-multipart==0.0.20
 # 数据库 ORM
 sqlalchemy==2.0.36
 
-# OCR 引擎 (PaddleOCR → ONNX → INT8 量化)
+# OCR 引擎 (PaddleOCR 系列预训练模型 → ONNX Runtime 本地推理)
 # ⚠️ Python 3.13 只支持到 1.2.3。
 # ⚠️ rapidocr 声明依赖 opencv-python>=4.5.1.48，而本项目用 opencv-python-headless。
 #    直接 `pip install -r requirements.txt` 会把两者**同时装上**（实测 pip 解析报告同现），

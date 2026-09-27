@@ -4,10 +4,14 @@ $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 $ProjectDir = Split-Path -Parent $PSScriptRoot
 $PythonExe = Join-Path $ProjectDir '.venv\Scripts\python.exe'
-$StateDir = if ($env:DOC_OCR_DATA_DIR) { $env:DOC_OCR_DATA_DIR } else { $ProjectDir }
-$RuntimeDir = Join-Path $StateDir 'data\runtime'
 $ServiceUrl = "http://127.0.0.1:$Port"
 if (-not (Test-Path -LiteralPath $PythonExe)) { throw '请先创建 .venv 并运行 scripts/install_dependencies.py。' }
+Push-Location $ProjectDir
+try {
+    $StateDir = & $PythonExe -c 'from app.config import DATA_ROOT; print(DATA_ROOT)'
+    if ($LASTEXITCODE -ne 0) { throw '无法读取本机数据目录配置，请检查 .env。' }
+} finally { Pop-Location }
+$RuntimeDir = Join-Path $StateDir 'data\runtime'
 if (-not (Test-Path -LiteralPath (Join-Path $ProjectDir 'app\static_vite\index.html'))) {
     throw '请先在 frontend 目录运行 npm ci 和 npm run build。'
 }

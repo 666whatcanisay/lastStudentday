@@ -101,8 +101,9 @@ import { ElMessage } from 'element-plus'
 
 /** 文件上传 */
 export function uploadFile(file, onProgress) {
-    return http.post('/file/upload', file, {
-        headers: { 'Content-Type': 'multipart/form-data' },
+    const form = new FormData()
+    form.append('file', file, file.name)
+    return http.post('/file/upload', form, {
         onUploadProgress: onProgress,
     })
 }

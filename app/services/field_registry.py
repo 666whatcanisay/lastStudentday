@@ -66,7 +66,8 @@ FIELD_REGISTRY: Dict[str, List[FieldSpec]] = {
             r'销售方[^。\n]{0,30}?(?:统一社会信用代码|纳税人识别号)[：:\s]*([0-9A-Z]{15,20})',
         ]),
         FieldSpec("net_amount", "不含税金额", "amount", [
-            r'(?:不含税金额|金额|合计金额)[：:]?[ \t]*[￥¥]?[ \t]*(-?[0-9][0-9,]*(?:\.[0-9]{1,2})?)',
+            # 不拿表格中第一行「金额」冒充总额；证据不足则留空。
+            r'(?:不含税金额|合计金额|金额合计)[：:]?[ \t]*[￥¥]?[ \t]*(-?[0-9][0-9,]*(?:\.[0-9]{1,2})?)',
         ]),
         FieldSpec("tax_amount", "税额", "amount", [
             r'税额[：:]?[ \t]*[￥¥]?[ \t]*(-?[0-9][0-9,]*(?:\.[0-9]{1,2})?)',
@@ -75,10 +76,12 @@ FIELD_REGISTRY: Dict[str, List[FieldSpec]] = {
         FieldSpec("currency", "币种", "currency", []),
     ],
     "contract": [
-        FieldSpec("contract_title", "合同名称", "text", []),  # 标题版式多样，只人工/首行启发
+        FieldSpec("contract_title", "合同名称", "text", [
+            r'^\s*([^\n]{2,40}(?:合同|协议))[ \t]*$',
+        ]),
         FieldSpec("contract_number", "合同编号", "text", [
             r'合同编号[：:\s]*([A-Za-z0-9\-_]+)',
-            r'(?:编号|协议编号)[：:\s]*([A-Za-z0-9\-_]+)',
+            r'(?:单据编号|编号|协议编号)[：:\s]*([A-Za-z0-9\-_]+)',
         ]),
         FieldSpec("party_a", "甲方", "text", [
             r'甲方[（(][^）)]{0,10}[）)]?[：:\s]*([^\s：:，,；;]{2,40})',
@@ -98,7 +101,7 @@ FIELD_REGISTRY: Dict[str, List[FieldSpec]] = {
         ]),
         FieldSpec("contract_amount", "合同金额", "amount", [
             r'合同(?:总?金额|总额|价款)[：:]?[ \t]*[￥¥]?[ \t]*(-?[0-9][0-9,]*(?:\.[0-9]{1,2})?)',
-            r'(?:总金额|总额)[：:]?[ \t]*[￥¥]?[ \t]*(-?[0-9][0-9,]*(?:\.[0-9]{1,2})?)',
+            r'(?:金额合计|合计金额|总金额|总额)[：:]?[ \t]*[￥¥]?[ \t]*(-?[0-9][0-9,]*(?:\.[0-9]{1,2})?)',
         ]),
         FieldSpec("currency", "币种", "currency", []),
     ],
@@ -225,6 +228,7 @@ def normalize_value(spec: FieldSpec, raw: Optional[str], *, strict: bool = False
 _INVOICE_STRONG = re.compile(r'发票号码|发票代码|增值税.{0,6}发票|电子发票')
 _CONTRACT_TITLE = re.compile(r'[\u4e00-\u9fa5]{0,12}(合同|协议)')
 _PARTY_LABELS = re.compile(r'甲方|乙方')
+_INVOICE_TITLE = re.compile(r'(?:^|\n)\s*[^\n]{0,25}发票[ \t]*(?:\n|$)')
 
 
 def classify_doc_type(text: str) -> str:
@@ -242,9 +246,15 @@ def classify_doc_type(text: str) -> str:
     has_contract_title = bool(_CONTRACT_TITLE.search(head))
     has_parties = bool(_PARTY_LABELS.search(text[:1500]))
     has_invoice_strong = bool(_INVOICE_STRONG.search(text))
+    # 旧式服务费票据：标题为发票且有税额/价税合计，但没有法定发票号码标签。
+    legacy_invoice = bool(_INVOICE_TITLE.search(head)
+                          and re.search(r'税额[：:]|税率[：:]', text)
+                          and '价税合计' in text)
+    # 旧式合同：标题为合同/协议，双方用本方/往来单位表示；不据此推断甲乙身份。
+    legacy_parties = '本方单位' in text[:1500] and '往来单位' in text[:1500]
 
-    if has_invoice_strong and not has_contract_title:
+    if (has_invoice_strong or legacy_invoice) and not has_contract_title:
         return "invoice"
-    if has_contract_title and has_parties:
+    if has_contract_title and (has_parties or legacy_parties):
         return "contract"
     return "other"
