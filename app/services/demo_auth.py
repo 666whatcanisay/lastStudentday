@@ -36,7 +36,10 @@ def _unb64(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
-def password_hash(password: str, *, min_length: int = 16) -> str:
+def password_hash(password: str, *, min_length: int = 12) -> str:
+    # 下限从 16 降到 12：单口令模式沿用用户既有口令（14 字符），
+    # 该口令由用户指定而非脚本随机生成，硬性 16 位会直接拒绝配置。
+    # 12 与 scripts/setup_demo_auth.py 的 --guest-password 校验保持一致。
     if len(password) < min_length:
         raise ValueError(f"演示口令至少需要 {min_length} 个字符")
     salt = secrets.token_bytes(16)
@@ -94,6 +97,16 @@ class DemoSettings:
     guest_hash: str = ""
     admin_hash: str = ""
 
+    @property
+    def single_password(self) -> bool:
+        """单口令模式：未配置访客口令时，唯一口令登录后即为完整管理员。
+
+        为什么保留 guest_hash 字段而不删掉：双角色（只读访客 + 管理员）的
+        能力本身是有用的，删掉会伤到既有演示流程；这里只是让"未配置访客口令"
+        自动降级为单口令，不引入账号系统，也不需要第二个口令。
+        """
+        return self.enabled and not self.guest_hash
+
     @classmethod
     def from_environment(cls) -> "DemoSettings":
         enabled = os.getenv("DOC_OCR_DEMO_MODE", "").lower() in {"1", "true", "yes", "on"}
@@ -102,10 +115,14 @@ class DemoSettings:
         origin = validated_public_origin(os.getenv("DOC_OCR_DEMO_PUBLIC_ORIGIN", ""))
         guest_hash = os.getenv("DOC_OCR_DEMO_GUEST_HASH", "")
         admin_hash = os.getenv("DOC_OCR_DEMO_ADMIN_HASH", "")
-        if not valid_password_hash(guest_hash) or not valid_password_hash(admin_hash):
-            raise ValueError("演示模式缺少有效的访客/管理员口令哈希；先运行配置脚本")
-        if guest_hash == admin_hash:
-            raise ValueError("访客与管理员口令必须不同")
+        if not valid_password_hash(admin_hash):
+            raise ValueError("演示模式缺少有效的管理员口令哈希；先运行配置脚本")
+        # 单口令模式：不配访客口令即视为"唯一口令"，登录后获得完整管理员权限。
+        if guest_hash:
+            if not valid_password_hash(guest_hash):
+                raise ValueError("访客口令哈希无效；修正它或删除该项以启用单口令模式")
+            if guest_hash == admin_hash:
+                raise ValueError("访客与管理员口令必须不同")
         return cls(True, origin, guest_hash, admin_hash)
 
 
@@ -137,8 +154,12 @@ class DemoAuth:
                 raise RuntimeError("登录尝试过多，请一分钟后重试")
         # Both hashes are evaluated to keep the role-specific timing uniform.
         admin = verify_password(password, self.settings.admin_hash)
-        guest = verify_password(password, self.settings.guest_hash)
-        role = "admin" if admin else "guest" if guest else None
+        if self.settings.single_password:
+            # 单口令模式只有一个口令：校验通过即为完整管理员，不存在访客分支。
+            role = "admin" if admin else None
+        else:
+            guest = verify_password(password, self.settings.guest_hash)
+            role = "admin" if admin else "guest" if guest else None
         with self._lock:
             if role is None:
                 self._failures.append(now)
@@ -236,7 +257,7 @@ class DemoAuth:
         role = self.role_for(token)
         if role is None:
             return JSONResponse(status_code=401, content={
-                "code": 401, "msg": "请先登录演示系统", "data": None})
+                "code": 401, "msg": "请先登录后再访问", "data": None})
         request.state.demo_role = role
         if role != "admin" and self._owner_only(request):
             return JSONResponse(status_code=403, content={
@@ -249,7 +270,7 @@ class DemoAuth:
         kind = self._work_type(request)
         if kind and not self.begin_work(token, kind):
             return JSONResponse(status_code=429, content={
-                "code": 429, "msg": "演示服务繁忙，请稍后再试", "data": None})
+                "code": 429, "msg": "服务繁忙，请稍后再试", "data": None})
         try:
             response = await call_next(request)
             response.headers["Cache-Control"] = "no-store"

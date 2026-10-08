@@ -8,7 +8,7 @@ from app.services.demo_auth import (
     COOKIE_NAME, DEMO_AUTH, SESSION_SECONDS, allowed_browser_origin,
 )
 
-router = APIRouter(prefix="/api/auth", tags=["演示访问"])
+router = APIRouter(prefix="/api/auth", tags=["访问登录"])
 
 
 class LoginRequest(BaseModel):
@@ -36,7 +36,7 @@ def me(request: Request):
 @router.post("/login")
 def login(body: LoginRequest, request: Request):
     if not DEMO_AUTH.settings.enabled:
-        return _response(400, "当前未开启演示登录", status=400)
+        return _response(400, "当前未开启登录保护", status=400)
     if not allowed_browser_origin(request, DEMO_AUTH.settings.public_origin):
         return _response(403, "请求来源未获允许", status=403)
     try:
@@ -48,9 +48,16 @@ def login(body: LoginRequest, request: Request):
     role, token = result
     response = _response(200, "登录成功", {
         "demo_mode": True, "authenticated": True, "role": role})
+    # cookie 的 Secure 必须跟着**实际协议**走，不能写死 True：
+    #   · 经 Tailscale Funnel 访问 → 代理会带 X-Forwarded-Proto: https → Secure=True
+    #   · 本机 http://127.0.0.1 验证 → Secure=False
+    # 写死 True 时，本机 http 下浏览器/客户端根本不会回传 cookie，
+    # 现象是「登录返回 200 但下一个请求仍然 401」，看起来像权限没生效。
+    forwarded = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    secure_cookie = forwarded == "https" or request.url.scheme == "https"
     response.set_cookie(
         COOKIE_NAME, token, max_age=SESSION_SECONDS, path="/",
-        httponly=True, secure=True, samesite="strict")
+        httponly=True, secure=secure_cookie, samesite="strict")
     response.headers["Cache-Control"] = "no-store"
     return response
 

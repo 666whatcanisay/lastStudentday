@@ -8,7 +8,7 @@
       </div>
       <div class="header-right">
         <el-tag v-if="auth.demoMode && auth.authenticated" size="small" effect="dark">
-          {{ auth.role === 'admin' ? '管理员' : '演示访客' }}
+          {{ auth.role === 'admin' ? '管理员' : '受限访问' }}
         </el-tag>
         <el-button v-if="auth.demoMode && auth.authenticated" size="small" text style="color: #fff;" @click="signOut">
           退出登录
@@ -27,12 +27,12 @@
       <div v-if="!auth.ready" class="auth-state">正在检查访问状态…</div>
       <div v-else-if="auth.demoMode && !auth.authenticated" class="auth-state">
         <el-card class="login-card" shadow="hover">
-          <h2>演示系统登录</h2>
-          <p>请输入演讲期间提供的临时口令。通过后可体验文档识别、统计和智能问答。</p>
+          <h2>访问登录</h2>
+          <p>请输入访问口令。登录后可完整使用文档识别、校对、统计、导出与智能问答。</p>
           <el-form @submit.prevent="signIn">
             <el-form-item>
               <el-input v-model="password" type="password" show-password
-                        autocomplete="current-password" placeholder="临时口令" @keyup.enter="signIn" />
+                        autocomplete="current-password" placeholder="访问口令" @keyup.enter="signIn" />
             </el-form-item>
             <el-button type="primary" native-type="submit" :loading="signingIn" style="width: 100%;">
               登录
