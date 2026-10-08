@@ -9,7 +9,14 @@ if (-not (Test-Path -LiteralPath $PythonExe)) { throw '请先创建 .venv 并运
 Push-Location $ProjectDir
 try {
     $StateDir = & $PythonExe -c 'from app.config import DATA_ROOT; print(DATA_ROOT)'
+    # 必须把「python 根本没跑起来」和「python 跑了但 .env 配错」分开报。
+    # $LASTEXITCODE 为 $null 说明进程压根没被执行（受限环境拦截 / .venv 不完整），
+    # 此时笼统地说「请检查 .env」会把人引到完全错误的方向（实测被带偏过）。
+    if ($null -eq $LASTEXITCODE) {
+        throw "无法执行 $PythonExe（未返回退出码）。若处于受限环境（沙箱/安全软件拦截），请在普通终端手动运行本脚本；否则请检查 .venv 是否完整。"
+    }
     if ($LASTEXITCODE -ne 0) { throw '无法读取本机数据目录配置，请检查 .env。' }
+    if ([string]::IsNullOrWhiteSpace($StateDir)) { throw '未能取得本机数据目录（DATA_ROOT 为空），请检查 .env 中的 DOC_OCR_DATA_DIR。' }
 } finally { Pop-Location }
 $RuntimeDir = Join-Path $StateDir 'data\runtime'
 if (-not (Test-Path -LiteralPath (Join-Path $ProjectDir 'app\static_vite\index.html'))) {
