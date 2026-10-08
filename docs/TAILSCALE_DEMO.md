@@ -59,6 +59,39 @@ scripts\tailscale_funnel.bat off
 
 > Tailscale 官方说明 `--bg` 映射在设备或 Tailscale 重启后仍可能自动恢复；不要以关终端或重启电脑代替 `off`。后端是否自动启动另行检查，使用前仍须运行 `status`。
 
+## 如果 Tailscale 卡住了（本机现状，2026-10-08）
+
+本机 `tailscaled` 长时间停在 `NoState`，`status` 只报一句 `Tailscale is starting. Please wait.`：
+
+```
+unexpected state: NoState
+BackendState = NoState · Online = False · DNSName = (空)
+```
+
+**第一步：分清是「网络不通」还是「守护进程卡住」**（只读，不改任何设置）：
+
+```powershell
+& "C:\Program Files\Tailscale\tailscale.exe" netcheck
+```
+
+- 能跑出 DERP 延迟 → **网络没问题，是守护进程卡住**，只能重启服务（本机实测：UDP 正常、香港 DERP 21ms，属这一类）
+- 连 DERP 都测不到 → 先解决网络/代理，再谈 Funnel
+
+**第二步：以管理员身份重启服务**。在**管理员** PowerShell 里：
+
+```powershell
+Restart-Service -Name Tailscale -Force
+```
+
+报「无法打开计算机'.'上的 Tailscale 服务」= 当前不是管理员窗口（权限问题，不是服务本身坏了）。
+也可直接在「服务」管理器（`services.msc`）里右键 Tailscale → 重新启动，或从开始菜单退出 Tailscale 客户端再重新打开。
+
+重启后确认 `BackendState` 变成 `Running`，再跑 `scripts\tailscale_funnel.bat status`。
+
+⚠️ **这一步只能由你手工做**：`Restart-Service` 和结束系统服务进程都需要管理员权限，脚本与自动化流程都无权代劳（实测报「拒绝访问」）。任务书里「宿主机重启后需要手动重启也可接受」指的就是这一步。
+
+> ⚠️ `tailscale_funnel.ps1` 内部用 .NET `ProcessStartInfo` 调 `tailscale.exe`。在受限环境（沙箱 / 安全软件拦截）里这个调用会被拦住，**脚本必须在普通终端运行**（双击 `.bat`，或开一个普通 PowerShell 窗口），不要在被拦截的环境里跑。
+
 ## 验证清单
 
 开 Funnel 前，本机已按 Funnel 的真实请求形态做过验证（`Host` + `Origin` + `X-Forwarded-Proto: https` 三件套），**16/16 通过**：
