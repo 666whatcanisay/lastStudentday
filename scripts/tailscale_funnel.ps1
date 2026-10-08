@@ -19,18 +19,20 @@
   也可以直接双击 scripts\tailscale_funnel.bat up
 
 .NOTES
-  本机重启后 Tailscale 与后端都不会自动带起，需要手动跑一次 up。
+  --bg 映射在 Tailscale 重启后仍可能恢复；用完必须显式 off。
 #>
 param(
     [Parameter(Position = 0)]
     [ValidateSet('up', 'status', 'off')]
     [string]$Action = 'status',
     [int]$Port = 8000,
+    [ValidateSet('443')]
     [string]$HttpsPort = '443'
 )
 
 $ErrorActionPreference = 'Stop'
 $Ts = 'C:\Program Files\Tailscale\tailscale.exe'
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
 
 function Write-Head($text) { Write-Host ""; Write-Host "== $text ==" -ForegroundColor Cyan }
 function Write-Ok($text)   { Write-Host "  [OK]   $text" -ForegroundColor Green }
@@ -80,55 +82,144 @@ function Invoke-Ts {
     $stdout = $p.StandardOutput.ReadToEnd()
     $stderr = $p.StandardError.ReadToEnd()
     $p.WaitForExit()
-    if ([string]::IsNullOrWhiteSpace($stdout) -and -not [string]::IsNullOrWhiteSpace($stderr)) {
-        return $stderr
+    if ($p.ExitCode -ne 0) {
+        $detail = if ([string]::IsNullOrWhiteSpace($stderr)) { $stdout.Trim() } else { $stderr.Trim() }
+        throw "Tailscale 命令失败（退出码 $($p.ExitCode)）：$detail"
     }
-    if ($null -eq $stdout) { return '' }
     return $stdout
 }
 
+function Get-ConfiguredOrigin {
+    $value = $env:DOC_OCR_DEMO_PUBLIC_ORIGIN
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $envFile = Join-Path $ProjectRoot '.env'
+        if (-not (Test-Path $envFile)) { throw "缺少 $envFile，无法核对公网域名" }
+        $line = Get-Content $envFile | Where-Object { $_ -match '^\s*DOC_OCR_DEMO_PUBLIC_ORIGIN\s*=' } | Select-Object -Last 1
+        if ($line) { $value = ($line -split '=', 2)[1] }
+    }
+    $value = ([string]$value).Trim().Trim('"').Trim("'").TrimEnd('/').ToLowerInvariant()
+    if ($value -notmatch '^https://[a-z0-9.-]+\.ts\.net$') {
+        throw '配置中缺少准确的 DOC_OCR_DEMO_PUBLIC_ORIGIN（https://设备名.tailnet.ts.net）'
+    }
+    return $value
+}
+
+function Get-JsonProperty {
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+function Get-FunnelState {
+    $json = [string](Invoke-Ts @('funnel', 'status', '--json'))
+    if ([string]::IsNullOrWhiteSpace($json)) { throw 'Funnel 状态为空，无法确认映射' }
+    try { $state = $json | ConvertFrom-Json }
+    catch { throw "Funnel 状态不是有效 JSON：$($_.Exception.Message)" }
+    if ($state -isnot [pscustomobject]) { throw 'Funnel 状态不是 JSON 对象，无法确认映射' }
+    return $state
+}
+
+function Get-Mapping {
+    param($State, [string]$Origin)
+    $authority = ([Uri]$Origin).Host + ':' + $HttpsPort
+    $site = Get-JsonProperty (Get-JsonProperty $State 'Web') $authority
+    $root = Get-JsonProperty (Get-JsonProperty $site 'Handlers') '/'
+    $tcp = Get-JsonProperty (Get-JsonProperty $State 'TCP') $HttpsPort
+    $foreground443 = $false
+    $foreground = Get-JsonProperty $State 'Foreground'
+    if ($null -ne $foreground) {
+        foreach ($entry in $foreground.PSObject.Properties) {
+            $config = $entry.Value
+            $fgTcp = Get-JsonProperty (Get-JsonProperty $config 'TCP') $HttpsPort
+            $fgSite = Get-JsonProperty (Get-JsonProperty $config 'Web') $authority
+            $fgAllow = Get-JsonProperty (Get-JsonProperty $config 'AllowFunnel') $authority
+            if ($null -ne $fgTcp -or $null -ne $fgSite -or $null -ne $fgAllow) {
+                $foreground443 = $true
+                break
+            }
+        }
+    }
+    return [pscustomobject]@{
+        Proxy = Get-JsonProperty $root 'Proxy'
+        Allow = Get-JsonProperty (Get-JsonProperty $State 'AllowFunnel') $authority
+        Https = Get-JsonProperty $tcp 'HTTPS'
+        HasSite = $null -ne $site
+        HasTcp = $null -ne $tcp
+        Foreground443 = $foreground443
+    }
+}
+
+function Test-ExpectedMapping {
+    param($State, [string]$Origin)
+    $mapping = Get-Mapping $State $Origin
+    return ($mapping.Proxy -eq "http://127.0.0.1:$Port" -and
+            $mapping.Allow -eq $true -and $mapping.Https -eq $true -and
+            -not $mapping.Foreground443)
+}
+
+function Test-MappingAbsent {
+    param($State, [string]$Origin)
+    $mapping = Get-Mapping $State $Origin
+    return (-not $mapping.HasSite -and -not $mapping.HasTcp -and
+            $null -eq $mapping.Allow -and -not $mapping.Foreground443)
+}
+
 function Test-TsUp {
-    $st = Invoke-Ts @('status')
-    if ($st -match 'NoState' -or $st -match 'not logged in' -or $st -match 'Logged out') {
-        Write-Bad "Tailscale 守护进程没有就绪（NoState）。"
-        Write-Info "现象：服务在跑，但状态是 'Tailscale is starting. Please wait.'"
+    param([string]$ExpectedOrigin)
+    $st = [string](Invoke-Ts @('status', '--json')) | ConvertFrom-Json
+    if ($st.BackendState -ne 'Running') {
+        Write-Bad "Tailscale 尚未就绪（状态：$($st.BackendState)）。"
         Write-Info "处理：以管理员身份重启 Tailscale 服务，或打开 Tailscale 客户端登录，然后重跑本脚本。"
         Write-Info "  Restart-Service -Name Tailscale -Force   （需要管理员）"
         return $false
     }
-    if ($st -match 'is starting') {
-        Write-Bad "Tailscale 仍在启动，稍等 10~30 秒后重跑。"
+    $dns = ([string]$st.Self.DNSName).TrimEnd('.').ToLowerInvariant()
+    if (-not $st.TailscaleIPs -or [string]::IsNullOrWhiteSpace($dns)) {
+        Write-Bad 'Tailscale 未取得 IP 或设备域名，不能开启 Funnel。'
         return $false
     }
-    $ip = [string](Invoke-Ts @('ip', '-4'))
-    $ip = $ip.Trim()
-    if ([string]::IsNullOrWhiteSpace($ip)) {
-        Write-Bad "Tailscale 没有分配到 IP，未连接。"
+    if ($ExpectedOrigin -ne "https://$dns") {
+        Write-Bad "Tailscale 域名 https://$dns 与本机配置 $ExpectedOrigin 不一致。"
         return $false
     }
-    Write-Ok "Tailscale 在线，本机 tailnet IP：$ip"
+    Write-Ok "Tailscale 在线，设备域名：https://$dns"
     return $true
 }
 
-switch ($Action) {
+try {
+    $origin = Get-ConfiguredOrigin
+    switch ($Action) {
 
     'status' {
+        $healthy = $true
         Write-Head "后端登录保护（http://127.0.0.1:$Port）"
         $code = Get-LocalStatus -P $Port
         if ($code -eq 401) {
             Write-Ok "未登录读取返回 401 —— 登录保护生效"
         } elseif ($code -eq 200) {
             Write-Bad "未登录读取返回 200 —— 登录保护没生效，绝对不能开 Funnel"
+            $healthy = $false
         } else {
             Write-Bad "后端没响应（code=$code），请先启动服务"
+            $healthy = $false
         }
 
         Write-Head "Tailscale 连接"
-        Test-TsUp | Out-Null
+        if (-not (Test-TsUp -ExpectedOrigin $origin)) { $healthy = $false }
 
         Write-Head "Funnel 当前映射"
-        Write-Host (Invoke-Ts @('funnel', 'status'))
-        Write-Host (Invoke-Ts @('funnel', 'status', '--json'))
+        $state = Get-FunnelState
+        if (Test-ExpectedMapping $state $origin) {
+            Write-Ok "$origin 正在公开映射到 http://127.0.0.1:$Port"
+        } elseif (Test-MappingAbsent $state $origin) {
+            Write-Info '当前没有本项目的 Funnel 映射。'
+        } else {
+            Write-Bad '443 端口有其他或不完整的映射，请人工检查后再操作。'
+            $healthy = $false
+        }
+        if (-not $healthy) { exit 1 }
     }
 
     'up' {
@@ -142,33 +233,49 @@ switch ($Action) {
         Write-Ok "未登录读取返回 401，可以开 Funnel"
 
         Write-Head "2/3 检查 Tailscale 连接"
-        if (-not (Test-TsUp)) { exit 1 }
+        if (-not (Test-TsUp -ExpectedOrigin $origin)) { exit 1 }
+
+        $before = Get-FunnelState
+        if (Test-ExpectedMapping $before $origin) {
+            Write-Ok '准确的 Funnel 映射已存在，无需重复开启。'
+            exit 0
+        }
+        if (-not (Test-MappingAbsent $before $origin)) {
+            throw '443 端口已有其他或不完整的映射；为避免覆盖，已停止。'
+        }
 
         Write-Head "3/3 建立公网映射（HTTPS $HttpsPort -> http://127.0.0.1:$Port）"
         $out = Invoke-Ts @('funnel', '--bg', "--https=$HttpsPort", "http://127.0.0.1:$Port")
         Write-Host $out
-        if ($out -match 'Funnel is not enabled' -or $out -match 'not enabled on your tailnet') {
-            Write-Bad "你的 tailnet 还没开启 Funnel。"
-            Write-Info "去 Tailscale 管理台 ACL 里加上 funnel 节点属性，再重跑本脚本："
-            Write-Info '  "nodeAttrs": [ { "target": ["*"], "attr": ["funnel"] } ]'
-            exit 1
+        $after = Get-FunnelState
+        if (-not (Test-ExpectedMapping $after $origin)) {
+            try { Invoke-Ts @('funnel', "--https=$HttpsPort", 'off') | Out-Null }
+            catch { Write-Bad "自动撤销未确认映射失败：$($_.Exception.Message)" }
+            throw 'Funnel 命令已执行，但未查到准确的 HTTPS 映射；已尝试撤销，仍须人工复核状态。'
         }
-        if ($out -match 'HTTPS is not enabled' -or $out -match 'cert') {
-            Write-Bad "tailnet 的 HTTPS 证书未开启，请到管理台 DNS 页面开启 HTTPS Certificates。"
-            exit 1
-        }
-
-        Write-Head "结果"
-        Write-Host (Invoke-Ts @('funnel', 'status'))
-        Write-Info "公网地址应等于 .env 里 DOC_OCR_DEMO_PUBLIC_ORIGIN 配置的域名。"
+        Write-Ok "$origin 已映射到 http://127.0.0.1:$Port"
         Write-Info "关闭：scripts\tailscale_funnel.bat off"
     }
 
     'off' {
         Write-Head "关闭 Funnel 映射"
-        Write-Host (Invoke-Ts @('funnel', "--https=$HttpsPort", 'off'))
+        if (-not (Test-TsUp -ExpectedOrigin $origin)) { exit 1 }
+        $before = Get-FunnelState
+        if (-not (Test-MappingAbsent $before $origin)) {
+            if (-not (Test-ExpectedMapping $before $origin)) {
+                throw '443 端口不是本项目的准确映射；为避免关闭其他服务，已停止。'
+            }
+            Write-Host (Invoke-Ts @('funnel', "--https=$HttpsPort", 'off'))
+        }
         Write-Head "复核"
-        Write-Host (Invoke-Ts @('funnel', 'status', '--json'))
-        Write-Info "上面应当是 {} 或没有 Foreground/AllowFunnel，表示公网已不可达。"
+        $after = Get-FunnelState
+        if (-not (Test-MappingAbsent $after $origin)) {
+            throw '443 端口映射仍在，不能报告已关闭。'
+        }
+        Write-Ok "$origin 的 443 映射已移除。"
     }
+}
+} catch {
+    Write-Bad $_.Exception.Message
+    exit 1
 }

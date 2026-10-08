@@ -41,6 +41,28 @@ def demo(monkeypatch):
     DEMO_AUTH._sessions.clear()
 
 
+@pytest.fixture
+def single_demo(monkeypatch):
+    settings = DemoSettings(
+        enabled=True,
+        public_origin=PUBLIC_ORIGIN,
+        guest_hash="",
+        admin_hash=password_hash("single-demo-password-123"),
+    )
+    monkeypatch.setattr(DEMO_AUTH, "settings", settings)
+    monkeypatch.setattr(local_security, "ALLOWED_HOSTS",
+                        {"127.0.0.1", "localhost", "::1", "ocr-demo.example.ts.net"})
+    monkeypatch.setattr(local_security, "LOCAL_CORS_ORIGINS",
+                        local_security.LOCAL_CORS_ORIGINS + [PUBLIC_ORIGIN])
+    DEMO_AUTH._sessions.clear()
+    DEMO_AUTH._failures.clear()
+    DEMO_AUTH._active.clear()
+    DEMO_AUTH._global_active.clear()
+    DEMO_AUTH._qa_calls.clear()
+    yield TestClient(main.app, base_url="http://127.0.0.1")
+    DEMO_AUTH._sessions.clear()
+
+
 def _login(client, password):
     return client.post("/api/auth/login", json={"password": password},
                        headers={"Origin": PUBLIC_ORIGIN})
@@ -94,6 +116,36 @@ def test_admin_can_open_maintenance_and_logout_revokes(demo):
     assert demo.get("/api/maintenance/restore-info").status_code == 401
 
 
+def test_single_password_is_admin_and_local_cookie_round_trips(single_demo):
+    assert DEMO_AUTH.settings.single_password
+    for path in ("/api/document/list", "/api/file/preview/1",
+                 "/api/document/export/report?doc_id=1", "/api/maintenance/restore-info"):
+        assert single_demo.get(path).status_code == 401
+    assert single_demo.get("/api/document/list", headers={"Host": "evil.example"}).status_code == 403
+    assert single_demo.post("/api/auth/login", json={"password": "single-demo-password-123"},
+                            headers={"Origin": "https://evil.example"}).status_code == 403
+
+    response = single_demo.post(
+        "/api/auth/login", json={"password": "single-demo-password-123"},
+        headers={"Origin": "http://127.0.0.1"})
+    assert response.status_code == 200
+    assert response.json()["data"]["role"] == "admin"
+    assert "Secure" not in response.headers["set-cookie"]
+    assert single_demo.get("/api/auth/me").json()["data"]["role"] == "admin"
+    assert single_demo.get("/api/maintenance/restore-info").status_code == 200
+    assert single_demo.post("/api/auth/logout").status_code == 200
+    assert single_demo.get("/api/maintenance/restore-info").status_code == 401
+
+
+def test_single_password_proxy_cookie_is_secure(single_demo):
+    response = single_demo.post(
+        "/api/auth/login", json={"password": "single-demo-password-123"},
+        headers={"Origin": "http://127.0.0.1", "X-Forwarded-Proto": "https"})
+    assert response.status_code == 200
+    assert response.json()["data"]["role"] == "admin"
+    assert "Secure" in response.headers["set-cookie"]
+
+
 def test_session_expiry_and_expensive_request_limits(demo):
     assert _login(demo, "guest-demo-password-123").status_code == 200
     token = demo.cookies.get(COOKIE_NAME)
@@ -145,3 +197,17 @@ def test_setup_script_preserves_other_env_and_disables_cleanly(tmp_path):
     disabled = env_file.read_text(encoding="utf-8")
     assert "LLM_API_KEY=keep-existing-value" in disabled
     assert "DOC_OCR_DEMO_" not in disabled
+
+
+def test_setup_script_single_password_writes_only_hash(tmp_path):
+    env_file = tmp_path / ".env"
+    script = str(main.BASE_DIR / "scripts" / "setup_demo_auth.py")
+    result = subprocess.run(
+        [sys.executable, script, "--origin", PUBLIC_ORIGIN,
+         "--password", "single-demo-password-123", "--env-file", str(env_file)],
+        capture_output=True, text=True, encoding="utf-8", check=True)
+    configured = env_file.read_text(encoding="utf-8")
+    assert "single-demo-password-123" not in configured + result.stdout
+    assert "DOC_OCR_DEMO_GUEST_HASH" not in configured
+    values = dict(line.split("=", 1) for line in configured.splitlines() if "=" in line)
+    assert verify_password("single-demo-password-123", values["DOC_OCR_DEMO_ADMIN_HASH"])

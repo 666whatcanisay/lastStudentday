@@ -47,7 +47,7 @@ scripts\tailscale_funnel.bat status
 scripts\tailscale_funnel.bat up
 ```
 
-`up` 会先自检「未登录返回 401」，再检查 Tailscale 是否在线，最后才建立映射；任何一步不满足都会停下并给出原因，不会带病开放。
+`status` 在登录保护失效、Tailscale 未就绪或命令失败时返回非零退出码；映射尚未开启但其余检查正常时可返回零。`up` 会先检查未登录 401、在线状态及设备域名，再核对 443 端口没有冲突；执行后还会确认状态中的 HTTPS 域名、公开权限与反代目标均准确，不能确认就返回失败。
 
 关闭：
 
@@ -55,9 +55,9 @@ scripts\tailscale_funnel.bat up
 scripts\tailscale_funnel.bat off
 ```
 
-`up` 用的是 `--bg`（后台保持），所以关掉终端映射仍在，**必须显式 `off`**。`off` 会打印 `funnel status --json`，结果应为 `{}` 或不再含 `Foreground` / `AllowFunnel`。
+`up` 用的是 `--bg`（后台保持），所以关掉终端映射仍在，**必须显式 `off`**。`off` 会检查命令退出码，并复核本项目的 HTTPS 443 映射已消失；Tailscale 未就绪或无法确认时返回失败，不能把它当成已经关闭。
 
-> 本机重启后 Tailscale 与后端都不会自动带起，手动重跑上面三步即可。
+> Tailscale 官方说明 `--bg` 映射在设备或 Tailscale 重启后仍可能自动恢复；不要以关终端或重启电脑代替 `off`。后端是否自动启动另行检查，使用前仍须运行 `status`。
 
 ## 验证清单
 
@@ -75,7 +75,7 @@ scripts\tailscale_funnel.bat off
 | 本机 http 下 cookie **不带** `Secure` | ✅ |
 | 伪造会话 token → 401 | ✅ |
 
-开启后建议再用手机关掉 Wi-Fi、走移动数据打开公网链接复验一次。
+本轮只在这台电脑上验收：若 Tailscale 恢复在线，用本机浏览器打开上述公网 HTTPS 域名并检查登录及主要只读流程，结束后立即 `off`。这**不能证明异地网络可达**；未来正式交付远程使用时，仍需用另一网络复验。
 
 ## 已知坑（都是踩过的）
 
@@ -86,7 +86,7 @@ scripts\tailscale_funnel.bat off
 
 ## 关闭后
 
-1. `scripts\tailscale_funnel.bat off`，并从公网确认链接已不可达。
+1. `scripts\tailscale_funnel.bat off`，确认退出码为零且本项目映射已消失。若 Tailscale 为 `NoState`，脚本无法核实关闭状态，须待服务恢复后重查。
 2. 等识别/导出任务结束，停掉项目服务。
 3. 如需彻底回到本机模式：`.\.venv\Scripts\python.exe scripts\setup_demo_auth.py --disable`，再 `scripts\start_all.bat`。重启会清空内存中的全部会话。
 
