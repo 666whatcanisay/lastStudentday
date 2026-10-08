@@ -34,11 +34,12 @@
         </div>
       </template>
 
-      <div v-if="selectedIds.length" class="selection-bar">
-        <span>已选 {{ selectedIds.length }} 份</span>
-        <el-checkbox v-model="attachOriginal" size="small" title="原件缺失时该份导出失败">PDF 附原件</el-checkbox>
-        <el-button size="small" type="primary" :loading="exporting" @click="exportReportsSelected">导出 PDF</el-button>
-        <el-button size="small" :loading="exporting" @click="exportSelected">导出 Excel</el-button>
+      <div class="selection-bar">
+        <span v-if="selectedIds.length">已选 {{ selectedIds.length }} 份</span>
+        <span v-else class="selection-hint">勾选下方文档后可批量导出</span>
+        <el-checkbox v-model="attachOriginal" size="small" :disabled="!selectedIds.length" title="原件缺失时该份导出失败">PDF 附原件</el-checkbox>
+        <el-button size="small" type="primary" :disabled="!selectedIds.length" :loading="exporting" @click="exportReportsSelected">导出 PDF</el-button>
+        <el-button size="small" :disabled="!selectedIds.length" :loading="exporting" @click="exportSelected">导出 Excel</el-button>
       </div>
 
       <el-table
@@ -50,7 +51,15 @@
         style="width: 100%"
       >
         <el-table-column type="selection" width="45" />
+        <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="file_name" label="文件名" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="file_type" label="类型" width="66" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.file_type === 'pdf' ? 'danger' : 'primary'" size="small">
+              {{ row.file_type === 'pdf' ? 'PDF' : '图片' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="doc_type" label="单据类型" width="90" align="center">
           <template #default="{ row }">
             <el-tag size="small" :type="docTypeTag(row.doc_type)">
@@ -71,6 +80,12 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column prop="infer_cost" label="推理耗时" width="98" align="center">
+          <template #default="{ row }">
+            <span v-if="row.infer_cost">{{ Number(row.infer_cost).toFixed(1) }} ms</span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="抽取字段" width="240">
           <template #default="{ row }">
             <div v-if="row.extracts?.some(item => item.field_key && item.field_value)" class="extract-preview">
@@ -86,6 +101,9 @@
             </div>
             <span v-else class="text-muted">-</span>
           </template>
+        </el-table-column>
+        <el-table-column prop="upload_time" label="上传时间" width="150" align="center">
+          <template #default="{ row }">{{ formatTime(row.upload_time) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="205" fixed="right" align="center">
           <template #default="{ row }">
@@ -132,6 +150,14 @@
             <el-tag size="small" :type="statusTagType(row.status)">{{ statusText(row.status) }}</el-tag>
             <el-tag size="small" :type="row.reviewed ? 'success' : 'warning'">{{ row.reviewed ? '已校对' : '待校对' }}</el-tag>
             <span>r{{ row.current_revision ?? '-' }}</span>
+          </div>
+          <!-- 窄屏把「ID / 类型 / 推理耗时 / 上传时间」收成一行次要信息，
+               保证手机上也不丢管理员需要的核对字段 -->
+          <div class="mobile-doc-sub">
+            <span>#{{ row.id }}</span>
+            <span>{{ row.file_type === 'pdf' ? 'PDF' : '图片' }}</span>
+            <span v-if="row.infer_cost">{{ Number(row.infer_cost).toFixed(1) }} ms</span>
+            <span>{{ formatTime(row.upload_time) }}</span>
           </div>
           <div v-if="row.extracts?.length" class="mobile-doc-fields">
             {{ row.extracts.filter(item => item.field_key && item.field_value).slice(0, 2).map(item => `${item.field_name}：${item.field_value}`).join(' · ') || '暂无适用字段' }}
@@ -192,6 +218,18 @@ const statusTagType = status => ({ 0: 'info', 1: 'success', 2: 'danger' }[status
 const docTypeLabel = type => ({ invoice: '发票', contract: '合同', other: '其他' }[type] || '其他')
 const docTypeTag = type => ({ invoice: 'danger', contract: 'warning', other: 'info' }[type] || 'info')
 const errMsg = error => error?.msg || error?.response?.data?.msg || error?.message || '未知原因'
+
+// 上传时间按本机时区渲染成「YYYY-MM-DD HH:mm:ss」。
+// 后端返回的是不带时区的 ISO 串，直接字符串截断会当成 UTC 显示，
+// 必须交给 Date 解析再取本地字段。
+function formatTime(time) {
+  if (!time) return '-'
+  const d = new Date(time)
+  if (isNaN(d.getTime())) return String(time)
+  const p = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} `
+    + `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
 
 function viewDetail(row, edit = false) { emit('open-detail', row, edit) }
 function updateViewport() { viewportWidth.value = window.innerWidth }
@@ -299,6 +337,9 @@ onUnmounted(() => {
 .search-input { width: 220px; }
 .mobile-filter-toggle { display: none; }
 .selection-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; margin-bottom: 8px; border: 1px solid #cfdfdc; border-radius: 8px; background: #f0f7f6; font-size: 13px; }
+/* 导出入口常驻：旧版一直是「导出PDF报告 (0) / 导出Excel (0)」常显，
+   收进勾选后才出现会让管理员找不到批量导出。这里保持可见、未选时禁用。 */
+.selection-hint { color: #8a9a97; }
 .list-card { border-radius: 10px; border-color: #e4ece9; }
 .list-card :deep(.el-card__header) { padding: 11px 15px; }
 .list-card :deep(.el-card__body) { padding: 12px 15px; }
@@ -324,6 +365,7 @@ onUnmounted(() => {
   .mobile-doc-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
   .mobile-doc-title strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
   .mobile-doc-meta { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin: 6px 0; font-size: 11px; color: #78878a; }
+  .mobile-doc-sub { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; font-size: 11px; color: #93a1a4; }
   .mobile-doc-fields { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #5c6d71; }
   .mobile-doc-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
   .mobile-doc-actions :deep(.el-button + .el-button) { margin-left: 0; }

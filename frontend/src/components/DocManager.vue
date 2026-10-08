@@ -13,9 +13,11 @@
       6. 历史只读：每次 OCR/编辑/改类型的时间、原因与完整快照
   -->
   <div class="doc-manager">
-    <!-- ===== 统计卡片 ===== -->
+    <!-- ===== 统计卡片 =====
+         四张卡与旧版一一对应：总数 / 识别成功 / 平均推理耗时 / OCR 引擎。
+         「待校对」不在卡片里重复，它已在文档列表标题栏以「N 份待校对」常驻显示。 -->
     <el-row :gutter="16" class="stat-row">
-      <el-col :xs="8" :sm="8" :md="8">
+      <el-col :xs="12" :sm="12" :md="6">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-content">
             <div class="stat-icon stat-icon-blue"><el-icon><Files /></el-icon></div>
@@ -26,7 +28,7 @@
           </div>
         </el-card>
       </el-col>
-      <el-col :xs="8" :sm="8" :md="8">
+      <el-col :xs="12" :sm="12" :md="6">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-content">
             <div class="stat-icon stat-icon-green"><el-icon><CircleCheck /></el-icon></div>
@@ -37,13 +39,24 @@
           </div>
         </el-card>
       </el-col>
-      <el-col :xs="8" :sm="8" :md="8">
+      <el-col :xs="12" :sm="12" :md="6">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-content">
             <div class="stat-icon stat-icon-orange"><el-icon><Clock /></el-icon></div>
             <div class="stat-info">
-              <div class="stat-label">待校对</div>
-              <div class="stat-value">{{ stats.unreviewed }}</div>
+              <div class="stat-label">平均推理耗时</div>
+              <div class="stat-value">{{ stats.avgCost }}<span class="stat-unit">ms</span></div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+      <el-col :xs="12" :sm="12" :md="6">
+        <el-card shadow="hover" class="stat-card">
+          <div class="stat-content">
+            <div class="stat-icon stat-icon-purple"><el-icon><Cpu /></el-icon></div>
+            <div class="stat-info">
+              <div class="stat-label">OCR 引擎</div>
+              <div class="stat-value engine-name">{{ engineLabel }}</div>
             </div>
           </div>
         </el-card>
@@ -75,7 +88,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import UploadQueue from './UploadQueue.vue'
 import DocumentList from './DocumentList.vue'
 import DocumentDetail from './DocumentDetail.vue'
@@ -84,8 +97,16 @@ import { DOCUMENTS_CHANGED } from '../documentEvents.js'
 
 defineProps({ isAdmin: { type: Boolean, default: true } })
 const detailRef = ref(null)
-const stats = reactive({ total: 0, success: 0, unreviewed: 0 })
-const ocrEngine = reactive({ engine_type: null })
+const stats = reactive({ total: 0, success: 0, unreviewed: 0, avgCost: '0.0' })
+const ocrEngine = reactive({ name: '', description: '', optimized: null, engine_type: null })
+
+// 引擎名：engine_type 尚未取到时显示「检测中」。
+// 不要拿 false/空值当「已知」——旧版踩过首屏先把「未知」闪成「模拟引擎」的坑。
+const engineLabel = computed(() => {
+  if (!ocrEngine.engine_type) return '检测中'
+  return { rapidocr: 'RapidOCR', tesseract: 'Tesseract', mock: '模拟引擎' }[ocrEngine.engine_type]
+    || ocrEngine.engine_type
+})
 
 async function loadStats() {
   try {
@@ -93,12 +114,16 @@ async function loadStats() {
     stats.total = result.data.total
     stats.success = result.data.success
     stats.unreviewed = result.data.unreviewed ?? 0
+    stats.avgCost = result.data.avg_cost ?? '0.0'
   } catch (error) { /* API interceptor has shown the error */ }
 }
 async function fetchHealth() {
   try {
     const result = await getHealth()
     const engine = result.data.ocr_engine || {}
+    ocrEngine.name = engine.name || ''
+    ocrEngine.description = engine.description || ''
+    ocrEngine.optimized = engine.optimized
     ocrEngine.engine_type = engine.engine_type || (engine.optimized ? 'rapidocr' : null)
   } catch (error) { /* health badge stays unknown */ }
 }
@@ -126,9 +151,13 @@ onUnmounted(() => window.removeEventListener(DOCUMENTS_CHANGED, loadStats))
 .stat-icon-blue { background: #477f88; }
 .stat-icon-green { background: #5b8b76; }
 .stat-icon-orange { background: #ac865c; }
+.stat-icon-purple { background: #7a6a94; }
 .stat-info { flex: 1; min-width: 0; }
 .stat-label { font-size: 13px; color: #909399; }
 .stat-value { font-size: 21px; font-weight: 600; color: #19343d; white-space: nowrap; }
+.stat-unit { font-size: 12px; font-weight: 400; color: #909399; margin-left: 2px; }
+/* 引擎名（如 RapidOCR）比数字长，压小字号并允许截断，避免撑破卡片 */
+.engine-name { font-size: 16px; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 767px) {
   .stat-row { margin-bottom: 5px; }
   .stat-card :deep(.el-card__body) { padding: 9px; }
