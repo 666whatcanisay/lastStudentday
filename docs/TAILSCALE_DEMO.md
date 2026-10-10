@@ -110,6 +110,14 @@ Restart-Service -Name Tailscale -Force
 
 本轮只在这台电脑上验收：若 Tailscale 恢复在线，用本机浏览器打开上述公网 HTTPS 域名并检查登录及主要只读流程，结束后立即 `off`。这**不能证明异地网络可达**；未来正式交付远程使用时，仍需用另一网络复验。
 
+### 2026-10-10 下午实测（单目录迁移后）
+
+- Tailscale：`BackendState=Running`、`Online=True`、`DNSName=wandertheearth.tail3e9b7d.ts.net.`；开 Funnel 前 `funnel status --json` 为 `{}`。
+- 开 Funnel 前本机检查：未鉴权 `GET /api/document/list`、`/api/document/analytics` → **401**；错误 `Origin` 与**缺失 `Origin`** 的 `POST /api/auth/login` → **403**；正确公网域名 `Origin` → 放行（返回 401＝口令错，非 403）。`.env` 的 `DOC_OCR_DEMO_PUBLIC_ORIGIN` 与 tailnet 域名**完全一致**。
+- 映射核对：`TCP.443.HTTPS=true`、`AllowFunnel[域名:443]=true`、`Handlers./.Proxy=http://127.0.0.1:<端口>`。
+- 云端只做**一次**生成测试，且只喂**合成资料**：先建只含合成件的隔离库（已剔除唯一一份真实发票），再 `--bg` 指向该隔离服务的端口。
+- ⚠️ **异地验收未完成**：本机解析 `*.ts.net` 会命中 Tailscale 内网地址并**直连本机**（另有 curl 走 schannel 报 `CRYPT_E_REVOCATION_OFFLINE`），所以**本机打开公网域名不算异地验收**。真正的手机移动网络验收须由用户完成；**未获确认前不得声称公网验收通过**。
+
 ## 已知坑（都是踩过的）
 
 - **cookie 的 `Secure` 必须跟着实际协议走**。写死 `True` 时，本机 `http://127.0.0.1` 下浏览器根本不回传 cookie，现象是「登录返回 200 但下一个请求仍 401」，看着像权限没生效。判据：`X-Forwarded-Proto` 为 `https` 或 `request.url.scheme == https`。

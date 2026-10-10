@@ -82,3 +82,6 @@ reports/_shots/
 *.sqlite3
 *.db
 *.db-*
+
+# 本工作目录的会话记忆与临时产物（含本机路径、在途笔记），不进公开仓库
+/.workbuddy-ai/

@@ -61,3 +61,11 @@ cd ..
 统一验证默认在系统临时目录建立独立数据副本，清空真实云端配置；按 P1–P4 四个功能包集中验证。退出码非零表示失败。结果见 `reports/acceptance/p1.json` 至 `p4.json`。公开仓库不包含旧库/原件冻结夹具，依赖该夹具的两项检查会明确标记为跳过；不要用真实 `data/` 作为测试目录。
 
 备份和报告测试产物仅含合成语料。本轮验证由实现者执行，不冒充另一位独立验收人。验证不会主动调用真实付费云端；Docker 不属于正式交付入口。
+
+## 6. 本机当前部署状态（2026-10-10）
+
+- **单目录**：唯一活动项目 `C:\Users\27715\Desktop\doc-ocr-system-github`，代码与数据同目录；旧目录已归档到 `E:\DocOCRArchive\doc-ocr-system-legacy-20261010_1249`（哈希校验一致，**不永久删除**）。
+- **数据根**：`.env` 的 `DOC_OCR_DATA_DIR` 指向上述新目录（`.env` 被 gitignore，勿外发）。迁移前后已逐项比对一致，恢复前快照在 `data/pre_restore_snapshot_*`。
+- **登录后自启**：计划任务 `DocOCR-AutoStart`（当前用户登录时触发 `scripts\start_all.ps1 -NoBrowser`）。**手动触发已实测通过；重启后是否自启未实测**。手动启停仍可用 `scripts\start_all.bat` / `stop_all.bat`。
+- **单实例锁**：同一数据目录同时只能有一个后端进程；第二个进程会因 `PermissionError` 启动失败。要并行必须换 `DOC_OCR_DATA_DIR`。
+- **公网入口**：按需用 `scripts\tailscale_funnel.bat up|status|off`。开之前必须确认未登录返回 **401**，否则**绝不能开**。当前为**单口令、登录即完整管理员**，公网开放等于把全部正常文档的读写权限交给任何拿到链接与口令的人，且**无法区分操作人**——这是已接受但必须显著标注的例外，**不得当作企业级安全**。
