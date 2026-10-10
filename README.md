@@ -28,10 +28,10 @@ Push-Location frontend
 npm ci
 npm run build
 Pop-Location
-.\scripts\start_all.bat
+.\启动项目.bat
 ```
 
-服务就绪后打开 <http://127.0.0.1:8000>。停止时先等待识别、导出等任务结束，再运行 `scripts\stop_all.bat`。请保持单进程启动，不要添加多 worker 或 `--reload`；首次打开已有数据时先另存 `data/` 与 `uploads/`。更完整的安装、备份与恢复说明见[本机交付说明](docs/LOCAL_DELIVERY.md)。本仓库没有经过容器部署验收，不提供 Docker 作为正式启动方式。
+项目根目录的 `启动项目.bat` 也可直接双击；它通过自身位置调用现有启动脚本，不写死项目绝对路径。登录 Windows 后不再自动启动。服务就绪后打开 <http://127.0.0.1:8000>。停止时先等待识别、导出等任务结束，再运行 `scripts\stop_all.bat`。请保持单进程启动，不要添加多 worker 或 `--reload`；首次打开已有数据时先另存 `data/` 与 `uploads/`。更完整的安装、备份与恢复说明见[本机交付说明](docs/LOCAL_DELIVERY.md)。本仓库没有经过容器部署验收，不提供 Docker 作为正式启动方式。
 
 不设置 `.env` 也可使用 OCR、校对、统计、导出和本地检索。需要云端生成式问答时，复制 `.env.example` 为 `.env`，仅在本机填写 `LLM_API_KEY` 等配置。主动发起云端问答会把相关文档片段发送给所配置的模型服务；请先确认数据允许外传。不要提交 `.env`、口令或真实业务数据。
 

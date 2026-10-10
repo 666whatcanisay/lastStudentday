@@ -8,7 +8,7 @@
 
 项目根目录包含 `app/`、`frontend/`；`.venv/` 需由使用者自行创建。
 
-1. 双击 `scripts/start_all.bat`。它检查虚拟环境与前端构建、启动本机服务、等待健康检查后打开浏览器。
+1. 双击项目根目录的 `启动项目.bat`。它以自身位置定位 `scripts/start_all.bat`，不依赖固定安装路径；随后检查虚拟环境与前端构建、启动本机服务、等待健康检查后打开浏览器。
 2. 访问 `http://127.0.0.1:8000`。仅支持 `localhost` 或 `127.0.0.1`，不使用远程 IP。
 3. 停止前等待识别、导出、问答等操作结束，再双击 `scripts/stop_all.bat`。Windows 下对身份核验通过的服务 PID 执行进程终止，未完成请求会被中断；下次启动检查 SQLite 与恢复日志。
 4. 端口被占用时脚本退出，不结束未知进程。确认旧服务归属后处理，或在 PowerShell 运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start_all.ps1 -Port 8001`。
@@ -27,7 +27,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-.\scripts\start_all.bat
+.\启动项目.bat
 ```
 
 依赖安装、模型下载需要联网，安装完成后的本地核心功能不需要云端。安装脚本先安装其余依赖，再用 `--no-deps` 安装 RapidOCR，避免同时引入两个 OpenCV 发行包，并在最后导入全部关键运行时依赖做硬性自检。已用全新 Python 3.12 虚拟环境验证安装成功；当前正式环境 Python 3.13 也通过全部功能回归。Docker 配置属于历史材料，不纳入本版部署验收。
@@ -66,6 +66,6 @@ cd ..
 
 - **单目录**：唯一活动项目 `C:\Users\27715\Desktop\doc-ocr-system-github`，代码与数据同目录；旧目录已归档到 `E:\DocOCRArchive\doc-ocr-system-legacy-20261010_1249`（哈希校验一致，**不永久删除**）。
 - **数据根**：`.env` 的 `DOC_OCR_DATA_DIR` 指向上述新目录（`.env` 被 gitignore，勿外发）。迁移前后已逐项比对一致，恢复前快照在 `data/pre_restore_snapshot_*`。
-- **登录后自启**：计划任务 `DocOCR-AutoStart`（当前用户登录时触发 `scripts\start_all.ps1 -NoBrowser`）。**手动触发已实测通过；重启后是否自启未实测**。手动启停仍可用 `scripts\start_all.bat` / `stop_all.bat`。
+- **手动启动**：按用户后续要求，`DocOCR-AutoStart` 已停用，登录 Windows 后不会由该任务自动启动。双击项目根目录的 `启动项目.bat`；停止仍可用 `scripts\stop_all.bat`。当前已运行的服务不会因停用任务而自动停止。
 - **单实例锁**：同一数据目录同时只能有一个后端进程；第二个进程会因 `PermissionError` 启动失败。要并行必须换 `DOC_OCR_DATA_DIR`。
 - **公网入口**：按需用 `scripts\tailscale_funnel.bat up|status|off`。开之前必须确认未登录返回 **401**，否则**绝不能开**。当前为**单口令、登录即完整管理员**，公网开放等于把全部正常文档的读写权限交给任何拿到链接与口令的人，且**无法区分操作人**——这是已接受但必须显著标注的例外，**不得当作企业级安全**。
