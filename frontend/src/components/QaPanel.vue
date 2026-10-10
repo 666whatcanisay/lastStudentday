@@ -219,7 +219,7 @@
                         ? `被引用 ${citedCount(m.result)} / ${m.result.references.length}`
                         : '模型未引用' }}
                     </el-tag>
-                    <span class="ar-hint">点击卡片查看原文并高亮命中位置</span>
+                    <span class="ar-hint">点击卡片查看来源（字段摘要 / 正文，正文命中位置会高亮）</span>
                   </div>
                   <div class="ar-list">
                     <CitationCard

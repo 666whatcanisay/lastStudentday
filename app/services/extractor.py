@@ -9,10 +9,11 @@ extract_for_type() 按字段注册表（app/services/field_registry.py）抽取�
 """
 import re
 import logging
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 from app.config import AMOUNT_PATTERNS
 from app.services import field_registry as registry
+from app.services import invoice_extract
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +56,20 @@ def _first_match(text: str, patterns: List[str]) -> Optional[str]:
     return None
 
 
-def extract_for_type(raw_text: Optional[str], doc_type: str) -> List[Dict[str, Optional[str]]]:
+def extract_for_type(raw_text: Optional[str], doc_type: str,
+                     layout: Optional[Dict] = None) -> List[Dict[str, Optional[str]]]:
     """
     按注册表抽取某类型文档的全部字段。
     不确定/未匹配字段保留空值；币种例外，未明确标注时按项目约定默认 CNY；
     原始抽取值保留在 field_value_raw，规范值在 field_value。
+
+    layout —— 可选的**版面坐标**（{"spans":[{text,x0,y0,x1,y1,page}], "text": 阅读顺序文本}），
+    来自 text 层 PDF（PyMuPDF）或扫描件的 OCR 文本框。只有发票用它做双栏配对与
+    合计行取值；不传则退化为纯文本规则（向后兼容旧调用方）。
     """
+    if doc_type == "invoice":
+        return invoice_extract.extract_invoice_fields(raw_text, layout)
+
     text = _normalize_for_extract(raw_text) if raw_text else ""
     results = []
     for spec in registry.specs_for(doc_type):

@@ -74,9 +74,17 @@
             <div class="meta-line">
               <el-tag size="small">{{ currentDoc.file_type === 'pdf' ? 'PDF 文档' : '图片' }}</el-tag>
               <el-tag size="small" type="info">版本 r{{ currentDoc.current_revision ?? '-' }}</el-tag>
-              <el-tag size="small" :type="currentDoc.reviewed ? 'success' : 'info'">
-                {{ currentDoc.reviewed ? '已校对' : '未校对' }}
-              </el-tag>
+              <!-- 「已校对」只代表该版本被人工确认过，不代表每个字段都有值 -->
+              <el-tooltip
+                :content="currentDoc.reviewed
+                  ? '该版本已被人工确认。注意：已校对 ≠ 每个字段都有值，留空字段表示未从原件确认到。'
+                  : '该版本尚未被人工确认。'"
+                placement="top"
+              >
+                <el-tag size="small" :type="currentDoc.reviewed ? 'success' : 'info'">
+                  {{ currentDoc.reviewed ? '已校对' : '未校对' }}
+                </el-tag>
+              </el-tooltip>
               <el-tag size="small" type="warning" v-if="currentDoc.engine_type">
                 引擎 {{ engineText(currentDoc.engine_type) }}
               </el-tag>

@@ -1,13 +1,19 @@
 <template>
   <!--
-    原文抽屉 —— 「溯源」的最后一跳。
+    来源抽屉 —— 「溯源」的最后一跳。
 
-    引用卡片上写着「[1] 曹操出行发票 · 第1页」，但用户凭什么相信？
-    这里把该文档的 OCR 原文完整摊开，并把命中的字符区间高亮出来。
-    答案可被验证，幻觉才无处藏身。
+    引用卡片上写着「[1] 示例发票 · 第1页」，但用户凭什么相信？
+    这里把该引用对应的内容摊开，答案可被验证，幻觉才无处藏身。
+
+    ⚠️ 两种来源必须**分开表述**（本轮修复的核心）：
+      · source_kind = 'fields' —— 结构化「字段摘要」。它只是若干字段名:值，
+        既不是完整原文，也没有字符偏移。旧文案把它写成「已展示完整原文」，
+        属于**误导**：用户以为看到了原件全文，其实只是一小段字段列表。
+      · source_kind = 'text'   —— 正文引用。有 char_start/char_end 才做高亮；
+        没有偏移时才退回展示该版本的完整有效文本。
 
     定位依据：document_chunk.char_start / char_end —— 阶段一分块时就存好了，
-    指向 document_info.ocr_raw_text。这是当初为界面预留的字段，现在正好用上。
+    指向该版本快照（document_revision）。这是当初为界面预留的字段，现在正好用上。
   -->
   <el-drawer
     :model-value="modelValue"
@@ -23,6 +29,8 @@
           <span class="sh-index">[{{ refItem?.index }}]</span>
           <span class="sh-name">{{ refItem?.file_name }}</span>
           <el-tag v-if="refItem?.page_no" size="small" type="info" effect="plain">第{{ refItem.page_no }}页</el-tag>
+          <el-tag v-if="isFieldRef" size="small" type="success" effect="plain">字段摘要</el-tag>
+          <el-tag v-else size="small" type="info" effect="plain">正文</el-tag>
           <el-tag v-if="refItem && !refItem.cited && showCited" size="small" type="info" effect="plain">未被引用</el-tag>
         </div>
         <div class="sh-right">
@@ -47,25 +55,61 @@
           关键词召回 #{{ refItem.bm25_rank }}（BM25 {{ fmt(refItem.bm25_score) }}）
         </el-tag>
         <el-tag size="small" type="success" effect="plain">融合得分 {{ fmt(refItem.score) }}</el-tag>
+        <!-- 字符偏移只对正文引用有意义；字段摘要没有坐标，绝不显示偏移 -->
         <span v-if="hitRange" class="src-range">
           高亮区间：第 {{ hitRange[0] }} ~ {{ hitRange[1] }} 字符
         </span>
       </div>
 
-      <!-- 原文 -->
       <div v-loading="loading" class="src-body">
         <el-alert v-if="notice" :title="notice" type="warning" :closable="false" show-icon />
-        <template v-if="text">
-          <pre v-if="hitRange" class="src-text"><span>{{ text.slice(0, hitRange[0]) }}</span><mark ref="markEl" class="src-mark">{{ text.slice(hitRange[0], hitRange[1]) }}</mark><span>{{ text.slice(hitRange[1]) }}</span></pre>
-          <pre v-else class="src-text">{{ text }}</pre>
+
+        <!-- ========== 视图 A：字段摘要（只列该版本中确实有值的字段） ========== -->
+        <template v-if="isFieldRef && viewMode === 'fields'">
+          <div class="src-kindbar">
+            <span class="skb-title">字段摘要</span>
+            <el-button
+              size="small" text type="primary"
+              :disabled="!snapshotText"
+              @click="viewMode = 'text'"
+            >查看完整有效文本 →</el-button>
+          </div>
+          <div v-if="valuedFields.length" class="field-list">
+            <div v-for="f in valuedFields" :key="f.field_key || f.field_name" class="field-row">
+              <span class="fr-name">{{ f.field_name }}</span>
+              <span class="fr-value">{{ f.field_value }}</span>
+            </div>
+          </div>
+          <el-empty v-else description="该版本没有已识别出值的字段" :image-size="70" />
           <el-alert
-            v-if="!hitRange"
+            type="info" :closable="false" show-icon class="src-alert"
+            title="「字段摘要」只列出该版本中已识别出值的字段。留空表示未从原件中确认到该字段，不代表原件没有。「已校对」仅表示该版本已被人工确认，不代表每个字段都有值。"
+          />
+        </template>
+
+        <!-- ========== 视图 B：正文（高亮命中；无偏移则展示该版本完整有效文本） ========== -->
+        <template v-else-if="snapshotText">
+          <div v-if="isFieldRef" class="src-kindbar">
+            <span class="skb-title">完整有效文本</span>
+            <el-button size="small" text type="primary" @click="viewMode = 'fields'">← 返回字段摘要</el-button>
+          </div>
+          <pre v-if="hitRange" class="src-text"><span>{{ snapshotText.slice(0, hitRange[0]) }}</span><mark ref="markEl" class="src-mark">{{ snapshotText.slice(hitRange[0], hitRange[1]) }}</mark><span>{{ snapshotText.slice(hitRange[1]) }}</span></pre>
+          <pre v-else class="src-text">{{ snapshotText }}</pre>
+          <el-alert
+            v-if="!hitRange && !isFieldRef"
             type="info" :closable="false" show-icon
-            title="该文档没有可用的字符偏移信息，已展示完整原文"
+            title="该片段没有可用的字符偏移信息，已展示该版本的完整有效文本"
+            class="src-alert"
+          />
+          <el-alert
+            v-else-if="!hitRange && isFieldRef"
+            type="info" :closable="false" show-icon
+            title="这是该版本的完整有效文本（校对后的正文），与上面的「字段摘要」不是同一份内容。"
             class="src-alert"
           />
         </template>
-        <el-empty v-else-if="!loading" description="未获取到 OCR 原文" :image-size="70" />
+
+        <el-empty v-else-if="!loading" description="未获取到内容" :image-size="70" />
       </div>
     </div>
   </el-drawer>
@@ -85,21 +129,34 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:modelValue', 'prev', 'next'])
 
-const text = ref('')
+const snapshotText = ref('')      // 该版本的有效全文（校对后的正文）
+const snapshotFields = ref([])    // 该版本的结构化字段
 const loading = ref(false)
 const notice = ref('')
+const viewMode = ref('text')      // 'fields' | 'text'
 let requestSequence = 0
 const markEl = ref(null)
+
+/** 是否结构化字段来源（决定文案与是否显示偏移高亮） */
+const isFieldRef = computed(() => props.refItem?.source_kind === 'fields')
+
+/** 只保留该版本中确实有值的字段 —— 空字段不列出来冒充「摘要」 */
+const valuedFields = computed(() =>
+  (snapshotFields.value || []).filter(
+    (f) => f && f.field_value != null && String(f.field_value).trim() !== ''
+  )
+)
 
 /**
  * 计算高亮区间。
  * 必须做边界钳制 —— char_start/char_end 存的是分块时的偏移，
  * 若文档后来被重新识别（文本长度变化），偏移可能越界，直接 slice 会切出错位内容。
+ * 字段来源没有坐标，永远返回 null。
  */
 const hitRange = computed(() => {
   const r = props.refItem
-  if (!r || r.source_kind === 'fields' || r.char_start == null || r.char_end == null || !text.value) return null
-  const len = text.value.length
+  if (!r || r.source_kind === 'fields' || r.char_start == null || r.char_end == null || !snapshotText.value) return null
+  const len = snapshotText.value.length
   const s = Math.max(0, Math.min(r.char_start, len))
   const e = Math.max(s, Math.min(r.char_end, len))
   return e > s ? [s, e] : null
@@ -111,8 +168,11 @@ watch(
     if (!visible || !props.refItem) return
     if (props.refItem.doc_id === undefined || props.refItem.doc_id === null) return
     loading.value = true
-    text.value = ''
+    snapshotText.value = ''
+    snapshotFields.value = []
     notice.value = ''
+    // 字段来源默认展示「字段摘要」；正文来源只能看正文
+    viewMode.value = props.refItem.source_kind === 'fields' ? 'fields' : 'text'
     const ticket = ++requestSequence
     const reference = { ...props.refItem }
     try {
@@ -128,14 +188,14 @@ watch(
       }
       const snapshot = (await getDocumentRevision(reference.doc_id, reference.revision)).data
       if (ticket !== requestSequence) return
+      const kindLabel = reference.source_kind === 'fields' ? '字段摘要' : '校对后的正文'
       notice.value = reference.revision !== current.current_revision
         ? `旧版本 r${reference.revision}（当前 r${current.current_revision}），不代表当前结果。`
-        : `引用版本 r${reference.revision} · ${reference.source_kind === 'fields' ? '结构化字段' : '校对后的全文'}`
-      text.value = reference.source_kind === 'fields'
-        ? (snapshot.fields || []).map(f => `${f.field_name}：${f.field_value ?? '未识别'}`).join('\n')
-        : snapshot.effective_text || ''
+        : `引用版本 r${reference.revision} · ${kindLabel}`
+      snapshotFields.value = snapshot.fields || []
+      snapshotText.value = snapshot.effective_text || ''
     } catch (e) {
-      if (ticket === requestSequence) { text.value = ''; notice.value = '引用已不可用，请重新提问。' }
+      if (ticket === requestSequence) { snapshotText.value = ''; snapshotFields.value = []; notice.value = '引用已不可用，请重新提问。' }
     } finally {
       if (ticket === requestSequence) loading.value = false
       nextTick(scrollToHit)
@@ -213,7 +273,48 @@ function fmt(v) {
 .src-body {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   min-height: 0;
+}
+.src-kindbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+.skb-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+}
+.field-list {
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+}
+.field-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid #f2f6fc;
+}
+.field-row:last-child {
+  border-bottom: none;
+}
+.fr-name {
+  flex-shrink: 0;
+  width: 88px;
+  font-size: 13px;
+  color: #909399;
+}
+.fr-value {
+  font-size: 13px;
+  color: #303133;
+  word-break: break-all;
+  font-weight: 500;
 }
 .src-text {
   font-family: ui-monospace, Consolas, 'Courier New', monospace;

@@ -11,7 +11,7 @@ import fitz  # PyMuPDF
 import numpy as np
 import cv2
 import logging
-from typing import Iterator, List, Tuple
+from typing import Dict, Iterator, List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -74,3 +74,51 @@ def iter_page_images(pdf_path: str, dpi: int = 200) -> Iterator[Tuple[int, np.nd
 def pdf_to_images(pdf_path: str, dpi: int = 200) -> List[np.ndarray]:
     """兼容旧入口：一次性返回全部页面（新代码请用 iter_page_images 逐页处理）"""
     return [img for _, img in iter_page_images(pdf_path, dpi)]
+
+
+def extract_text_layout(pdf_path: str) -> Tuple[List[Dict], str]:
+    """
+    抽取 PDF 的**文本层**：带 bbox 的 span 列表 + 阅读顺序全文。
+
+    用途：发票双栏字段（购买方/销售方 名称与税号）需要坐标才能稳定配对；
+    text 层 PDF 的文本也比 OCR 更干净（实测 OCR 把 `3,267.88` 读成 `3.267.88`，
+    文本层仍是正确的）。
+
+    ⚠️ 这是**抽取用的辅助证据**，不覆盖 OCR 原文：ocr_raw_text / effective_text
+    仍按既有链路生成。扫描件（无文本层）返回 ([], "")，由调用方改用 OCR 文本框。
+
+    返回 (spans, full_text)；spans 元素为
+    {"text", "x0", "y0", "x1", "y1", "page"}，坐标为 PDF point（72 dpi）。
+    """
+    spans: List[Dict] = []
+    texts: List[str] = []
+    doc = _open_pdf(pdf_path)
+    try:
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            try:
+                page_text = page.get_text()
+            except Exception as e:
+                raise PdfError(f"PDF 第 {page_num + 1} 页文本层读取失败: {e}") from e
+            if page_text and page_text.strip():
+                texts.append(page_text)
+            try:
+                blocks = page.get_text("dict").get("blocks", [])
+            except Exception:
+                blocks = []
+            for block in blocks:
+                if block.get("type") != 0:      # 只取文本块，跳过图片
+                    continue
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        txt = (span.get("text") or "").strip()
+                        if not txt:
+                            continue
+                        x0, y0, x1, y1 = span.get("bbox", (0, 0, 0, 0))
+                        spans.append({
+                            "text": txt, "x0": float(x0), "y0": float(y0),
+                            "x1": float(x1), "y1": float(y1), "page": page_num + 1,
+                        })
+    finally:
+        doc.close()
+    return spans, "\n".join(texts)

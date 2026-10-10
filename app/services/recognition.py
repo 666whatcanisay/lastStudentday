@@ -28,7 +28,7 @@ from app.services.backup_gate import GATE, BackupInProgress
 from app.services.extractor import extract_for_type
 from app.services.field_registry import classify_doc_type
 from app.services.ocr_engine import recognize, get_engine_info, get_engine_type
-from app.services.pdf_handler import iter_page_images, PdfError
+from app.services.pdf_handler import iter_page_images, extract_text_layout, PdfError
 from app.services.preprocess import load_image_from_path, preprocess_image
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,30 @@ class RecognitionError(RuntimeError):
 
 def _mock_allowed() -> bool:
     return os.getenv("DOC_OCR_ALLOW_MOCK", "").strip().lower() in ("1", "true", "yes")
+
+
+def _boxes_to_spans(boxes, page_no: int):
+    """把 OCR 返回的文本框（4 点多边形）转成统一 span（bbox + 页码）。
+
+    发票的双栏字段（购买方/销售方 名称与税号）靠坐标配对；
+    扫描件没有文本层，只能用 OCR 文本框当版面证据。
+    """
+    spans = []
+    for b in boxes or []:
+        box = b.get("box") if isinstance(b, dict) else None
+        if box is None:
+            continue
+        try:
+            xs = [float(p[0]) for p in box]
+            ys = [float(p[1]) for p in box]
+        except (TypeError, IndexError, ValueError):
+            continue
+        spans.append({
+            "text": (b.get("text") or "").strip(),
+            "x0": min(xs), "y0": min(ys), "x1": max(xs), "y1": max(ys),
+            "page": page_no,
+        })
+    return spans
 
 
 @GATE.writer
@@ -96,24 +120,42 @@ def _do_recognition(db: Session, doc: DocumentInfo, engine_type: str,
     try:
         # ---- 阶段 1：全部页面临时结果（不落库）----
         page_texts = []
+        ocr_spans = []          # OCR 文本框（扫描件的版面证据）
         total_cost = 0.0
         if doc.file_type == "pdf":
             for page_no, img in iter_page_images(str(file_path)):
                 GATE.abort_if_closed(f"识别第 {page_no} 页")
                 processed = preprocess_image(img)
-                text, cost, _ = recognize(processed)
+                text, cost, boxes = recognize(processed)
                 page_texts.append(f"=== 第 {page_no} 页 ===\n{text}")
                 total_cost += cost
+                ocr_spans.extend(_boxes_to_spans(boxes, page_no))
             if not page_texts:
                 raise RecognitionError("PDF 解析失败，未获取到页面图像", code=400)
         else:
             img = load_image_from_path(str(file_path))
             processed = preprocess_image(img)
-            text, cost, _ = recognize(processed)
+            text, cost, boxes = recognize(processed)
             page_texts.append(text)
             total_cost = cost
+            ocr_spans.extend(_boxes_to_spans(boxes, 1))
 
         full_text = "\n".join(page_texts)
+
+        # 版面坐标（仅供抽取用，不改原文/版本机制）：
+        #   text 层 PDF → 文本层 span（更干净且带坐标）
+        #   扫描件/图片 → OCR 文本框
+        layout = None
+        if doc.file_type == "pdf":
+            try:
+                spans, lay_text = extract_text_layout(str(file_path))
+            except Exception as e:      # 文本层异常不能拖垮识别
+                logger.warning(f"文档 {doc.id} 文本层读取失败，改用 OCR 文本框: {e}")
+                spans, lay_text = [], ""
+            if spans:
+                layout = {"spans": spans, "text": lay_text}
+        if layout is None and ocr_spans:
+            layout = {"spans": ocr_spans, "text": full_text}
 
         # ---- 阶段 2：分类与字段抽取（仍是临时结果）----
         # 类型规则：首次识别用本地规则分类；已有版本的重新识别保留用户设定的类型
@@ -121,7 +163,7 @@ def _do_recognition(db: Session, doc: DocumentInfo, engine_type: str,
             doc_type = classify_doc_type(full_text)
         else:
             doc_type = doc.doc_type or "other"
-        fields = extract_for_type(full_text, doc_type)
+        fields = extract_for_type(full_text, doc_type, layout)
 
         # ---- 阶段 3：单事务原子发布新版本 ----
         with GATE.write_section("发布识别版本"):

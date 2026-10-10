@@ -34,7 +34,8 @@
       </el-tag>
       <span v-if="refItem.vec_score != null" class="cc-score">向量 {{ refItem.vec_score.toFixed(3) }}</span>
       <span v-if="refItem.bm25_score != null" class="cc-score">关键词 {{ refItem.bm25_score.toFixed(2) }}</span>
-      <span class="cc-open">查看原文 →</span>
+      <!-- 字段来源不是「原文」，措辞必须区分，否则用户以为能看到原件全文 -->
+      <span class="cc-open">{{ refItem.source_kind === 'fields' ? '查看字段摘要 →' : '查看原文 →' }}</span>
     </div>
   </div>
 </template>
