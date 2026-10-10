@@ -2,6 +2,10 @@
 
 一句话：它把图片/PDF 中的文字变成可校对、可统计、可导出、可追溯的文档资料，再用检索帮助人查找答案。它不是会自动确认所有业务事实的“万能财务系统”。
 
+**交给下一位 AI 开发前**，先看 [当前审计底稿](AI_PROJECT_AUDIT.md)、[一次性执行方案](AI_EXECUTION_PLAN.md)、[验收单](AI_ACCEPTANCE.md) 和[可复制的完整提示词](NEXT_AGENT_PROMPT.md)。这些材料区分了源码已证实的问题、带日期的历史记录与仍需运行验证的事项；本文及旧验收数字不能单独代表当前状态。
+
+收尾验收后如要让桌面只剩一个活动项目文件夹，另按[单目录迁移方案](AI_SINGLE_FOLDER_MIGRATION.md)操作；当前正式数据仍由旧目录承载，不能直接删除旧文件夹。
+
 ## 阅读顺序
 
 1. 用浏览器打开同目录 `PROJECT_GUIDE.html`：先看整个系统，不需要安装任何文档阅读器。
@@ -10,7 +14,7 @@
 4. [上台讲解与答辩](PRESENTATION_CN.md)：完整讲稿、演示顺序、常见追问。
 5. [交付状态](FINAL_DELIVERY.md)、[本机安装维护](LOCAL_DELIVERY.md)、[公网演示操作卡](TAILSCALE_DEMO.md)：确认运行边界与恢复办法。
 
-建议先操作再读源码。第一次只记住四个板块：文档管理、统计、智能问答、数据管理。
+建议先操作再读源码。第一次先记住四个业务板块：文档管理、统计、智能问答、数据管理；另有第五个“项目介绍”讲解页签。
 
 ## 接收的东西分两包
 
@@ -33,7 +37,7 @@
 | `app/config.py`、`app/local_settings.py` | 路径与本机配置 | 环境变量优先，测试可跳过真实 `.env` |
 | `app/routers/file.py`、`ocr.py` | 上传与识别 | 文件校验、SHA-256 去重、逐页处理 |
 | `app/services/preprocess.py`、`ocr_engine.py` | 图像准备和文字识别 | 预训练模型与本地推理，不是自研训练 |
-| `app/services/field_registry.py` | 类型、字段、规范化规则 | 日期、金额、币种为何会留空 |
+| `app/services/field_registry.py` | 类型、字段、规范化规则 | 日期为何会留空、币种明确标注如何识别；未标币种在抽取流程默认 CNY |
 | `app/routers/document.py`、`app/services/revisions.py` | 编辑、校对、历史 | `expected_revision` 和有效版本 |
 | `app/routers/document_analytics.py`、`document_export.py` | 统计、导出 | 同一有效快照，同币种才汇总 |
 | `app/services/rag_indexer.py`、`rag_pipeline.py` | 建索引、检索、问答 | 当前版本才能进入检索 |
@@ -47,4 +51,4 @@
 
 ## 给接手开发者的提示词
 
-> 接手这个 v1.1.0 文档 OCR 工作台。先读 docs/HANDOVER.md、FINAL_DELIVERY.md 和 TECHNICAL_WALKTHROUGH.md，再核对当前 git 状态与本机配置。默认本轮只维护，不扩功能、不自动推送 GitHub、不自动开放 Funnel。真实 `.env` 和数据不得公开，也不得发送给模型服务。开发测试使用隔离数据；改一个完整功能后再集中测试。保持现有 API、角色权限、版本冲突、统计口径和离线恢复机制。未知日期/币种继续未知，不能凭文件名补值。提交前运行 pytest、前端构建和适用的 P1–P4 检查；报告实际执行与未执行事项，不能把模拟云端测试说成真实云端验收。
+> 接手这个 v1.1.0 文档 OCR 工作台。先读 docs/HANDOVER.md、FINAL_DELIVERY.md 和 TECHNICAL_WALKTHROUGH.md，再核对当前 git 状态与本机配置。默认本轮只维护，不扩功能、不自动推送 GitHub、不自动开放 Funnel。真实 `.env` 和数据不得公开，也不得发送给模型服务。开发测试使用隔离数据；改一个完整功能后再集中测试。保持现有 API、角色权限、版本冲突、统计口径和离线恢复机制。未知业务日期继续未知，不能凭文件名补值；未明确标币种的发票/合同按项目约定默认 CNY，明确外币不可覆盖。提交前运行 pytest、前端构建和适用的 P1–P4 检查；报告实际执行与未执行事项，不能把模拟云端测试说成真实云端验收。

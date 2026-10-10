@@ -20,7 +20,7 @@
           <el-icon><DataAnalysis /></el-icon>
           <span>统计筛选</span>
           <span class="card-subtitle">
-            统计口径：未在回收站 + 有当前有效版本 + 非模拟引擎；金额只统计发票「价税合计」与合同「合同金额」
+            统计口径：未在回收站 + 有当前有效版本 + 非模拟引擎；金额只统计发票「价税合计」与合同「合同金额」；未标币种默认人民币（CNY）
           </span>
           <el-button class="mobile-filter-toggle" size="small" @click="filtersOpen = !filtersOpen">
             {{ filtersOpen ? '收起' : '展开' }}
@@ -30,6 +30,7 @@
       <el-form :inline="true" class="filter-form" :class="{ 'is-open': filtersOpen }">
         <el-form-item label="类型">
           <el-select v-model="filters.docType" clearable placeholder="全部" style="width: 120px">
+            <el-option label="全部" value="" />
             <el-option label="发票" value="invoice" />
             <el-option label="合同" value="contract" />
             <el-option label="其他" value="other" />

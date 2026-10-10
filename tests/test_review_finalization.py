@@ -12,13 +12,13 @@ from app.routers.document import patch_document
 from scripts.finalize_legacy_review import build_payload
 
 
-def test_conservative_payload_never_promotes_generic_date_or_currency():
+def test_conservative_payload_keeps_generic_date_and_defaults_currency():
     row = {"suggested_type": "invoice", "revision": "1", "source_date": "2026-01-08",
            "source_summary_amount": "54464.66",
            "source_field_candidates": json.dumps({"total_amount": "57732.54"})}
     payload = build_payload(row)
     assert payload["fields"]["invoice_date"] is None
-    assert payload["fields"]["currency"] is None
+    assert payload["fields"]["currency"] == "CNY"
     assert payload["fields"]["total_amount"] == "57732.54"
 
 

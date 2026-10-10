@@ -7,8 +7,8 @@
 - 抽取保持本地规则，不引入 LLM；不确定/多候选冲突时留空，不编造值填满表格。
 - 规范化规则：日期 → ISO；金额 → 十进制字符串（Decimal，允许零与负数，
   最多两位小数；人工输入超精度**报错**而不是静默舍入）；空值是 None 不是 0。
-- 币种：只有明确上下文才推断（人民币/CNY/￥、USD/美元 等），
-  仅 `$` 或孤立 `¥` 不足以推断；无依据保存 None。
+- 币种：先识别明确的人民币/外币标注；未标明时，由抽取流程默认 CNY。
+  仅 `$` 或孤立 `¥` 不作为明确币种证据。
 
 如何新增字段（三步）：
   1. 在对应类型的 FIELD_REGISTRY 列表里加一个 FieldSpec（key/label/kind/patterns）
@@ -187,17 +187,18 @@ _CURRENCY_RULES = [
 ]
 
 
+def explicit_currency_codes(text: str) -> set[str]:
+    """Find clearly named currencies; multiple different codes need human review."""
+    return {code for rx, code in _CURRENCY_RULES if rx.search(text or "")}
+
+
 def infer_currency(text: str) -> Optional[str]:
     """
-    从全文推断币种。仅 `$` 或孤立 `¥` 不足以推断（任务书 3.1）；
-    无明确依据返回 None。
+    从全文推断唯一明确币种。仅 `$` 或孤立 `¥` 不足以推断；
+    没有明确标注或出现多种不同币种时返回 None。
     """
-    if not text:
-        return None
-    for rx, code in _CURRENCY_RULES:
-        if rx.search(text):
-            return code
-    return None
+    codes = explicit_currency_codes(text)
+    return next(iter(codes)) if len(codes) == 1 else None
 
 
 def normalize_value(spec: FieldSpec, raw: Optional[str], *, strict: bool = False) -> Optional[str]:

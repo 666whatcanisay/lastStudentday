@@ -28,12 +28,13 @@ def build_payload(row):
         if key not in specs:
             raise ValueError(f"Unexpected field: {key}")
         fields[key] = normalize_value(specs[key], value, strict=True)
-    # Generic 日期 never becomes invoice_date/signed_date. No currency guessing.
-    fields["currency"] = None
+    # Generic 日期 never becomes invoice_date/signed_date. Unmarked invoice/contract
+    # currency follows the project's later CNY default; explicit values are preserved.
+    fields["currency"] = (fields.get("currency") or "CNY") if kind in {"invoice", "contract"} else None
     if kind == "other":
         amount = row.get("source_summary_amount")
         fields["notes"] = (
-            f"原件金额：{amount}；币种未确认。" if amount else ""
+            f"原件金额：{amount}；此类型金额不参与发票/合同汇总。" if amount else ""
         ) + "已按原件核对，未知字段保持空值。"
     return {"expected_revision": int(row["revision"]), "doc_type": kind,
             "fields": fields, "mark_reviewed": True}

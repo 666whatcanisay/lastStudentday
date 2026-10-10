@@ -19,7 +19,7 @@ def test_legacy_invoice_requires_title_and_tax_evidence():
     assert extracted["net_amount"] == "54464.66"
     assert extracted["tax_amount"] == "3267.88"
     assert extracted["total_amount"] == "57732.54"
-    assert extracted["currency"] is None  # 「元」不足以锁定币种
+    assert extracted["currency"] == "CNY"  # 未明确标注时按项目约定默认人民币
     assert classify_doc_type("报销单\n备注：请附发票\n金额：99.00") == "other"
 
 
@@ -42,6 +42,13 @@ def test_other_document_keeps_generic_date_without_amount_inference():
     text = "货物运输服务结算单\n单据编号：YS-2026-0102 日期：2026年01月19日\n金额合计：88.00 元"
     assert classify_doc_type(text) == "other"
     assert values(text, "other")["document_date"] == "2026-01-19"
+
+
+def test_explicit_foreign_currency_is_not_overwritten_by_default():
+    assert values("美元 USD\n价税合计：100.00", "invoice")["currency"] == "USD"
+    assert values("合同金额：200.00 EUR", "contract")["currency"] == "EUR"
+    assert values("合同金额：200.00 元", "contract")["currency"] == "CNY"
+    assert values("合同金额：100 USD；另列：80 EUR", "contract")["currency"] is None
 
 
 def test_split_route_registration_keeps_fixed_paths_before_document_id():

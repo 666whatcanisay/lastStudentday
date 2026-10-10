@@ -70,6 +70,13 @@
           </template>
           <DataManager />
         </el-tab-pane>
+
+        <el-tab-pane name="intro" class="pane-scroll" lazy>
+          <template #label>
+            <span class="tab-label"><el-icon><Reading /></el-icon> 项目介绍</span>
+          </template>
+          <ProjectIntro :is-admin="auth.role === 'admin'" @navigate="navigateFromIntro" />
+        </el-tab-pane>
       </el-tabs>
     </el-main>
 
@@ -108,12 +115,18 @@ import DocManager from './components/DocManager.vue'
 const AnalyticsPanel = defineAsyncComponent(() => import('./components/AnalyticsPanel.vue'))
 const QaPanel = defineAsyncComponent(() => import('./components/QaPanel.vue'))
 const DataManager = defineAsyncComponent(() => import('./components/DataManager.vue'))
+const ProjectIntro = defineAsyncComponent(() => import('./components/ProjectIntro.vue'))
 
 // ==================== 页签 ====================
 const activeTab = ref('docs')
 const auth = reactive({ ready: false, demoMode: false, authenticated: false, role: null })
 const password = ref('')
 const signingIn = ref(false)
+
+function navigateFromIntro(tab) {
+  if (tab === 'data' && auth.role !== 'admin') return
+  if (['docs', 'analytics', 'qa', 'data'].includes(tab)) activeTab.value = tab
+}
 
 function applyAuth(data) {
   auth.demoMode = Boolean(data.demo_mode)
@@ -189,9 +202,21 @@ async function fetchHealth() {
 
 onMounted(() => {
   window.addEventListener('doc-ocr-auth-expired', authExpired)
+  window.addEventListener('resize', revealActiveTab)
   loadAuth()
 })
-onUnmounted(() => window.removeEventListener('doc-ocr-auth-expired', authExpired))
+onUnmounted(() => {
+  window.removeEventListener('doc-ocr-auth-expired', authExpired)
+  window.removeEventListener('resize', revealActiveTab)
+})
+
+function revealActiveTab() {
+  // 手机用原生横向滚动；视口变化后仍要让当前页签露出。
+  requestAnimationFrame(() => {
+    document.querySelector('.main-tabs .el-tabs__item.is-active')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  })
+}
 </script>
 
 <style scoped>
@@ -322,8 +347,18 @@ onUnmounted(() => window.removeEventListener('doc-ocr-auth-expired', authExpired
   .header-right :deep(.el-tag) { display: none; }
   .header-right :deep(.el-button) { padding: 4px; font-size: 12px; }
   .app-main { padding: 8px 10px 10px; }
-  .main-tabs :deep(.el-tabs__nav-wrap) { overflow: auto; }
+  .main-tabs :deep(.el-tabs__nav-wrap) { overflow: hidden; }
+  .main-tabs :deep(.el-tabs__nav-wrap.is-scrollable) { padding: 0; }
   .main-tabs :deep(.el-tabs__nav-wrap::after) { display: none; }
+  .main-tabs :deep(.el-tabs__nav-prev),
+  .main-tabs :deep(.el-tabs__nav-next) { display: none; }
+  .main-tabs :deep(.el-tabs__nav-scroll) {
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  .main-tabs :deep(.el-tabs__nav-scroll::-webkit-scrollbar) { display: none; }
+  .main-tabs :deep(.el-tabs__nav) { transform: none !important; }
   .main-tabs :deep(.el-tabs__item) { padding: 0 10px; font-size: 13px; }
   .tab-label { gap: 3px; }
 }

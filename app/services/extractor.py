@@ -58,7 +58,7 @@ def _first_match(text: str, patterns: List[str]) -> Optional[str]:
 def extract_for_type(raw_text: Optional[str], doc_type: str) -> List[Dict[str, Optional[str]]]:
     """
     按注册表抽取某类型文档的全部字段。
-    不确定/未匹配 → field_value=None（空值），绝不编造值填满表格；
+    不确定/未匹配字段保留空值；币种例外，未明确标注时按项目约定默认 CNY；
     原始抽取值保留在 field_value_raw，规范值在 field_value。
     """
     text = _normalize_for_extract(raw_text) if raw_text else ""
@@ -75,10 +75,16 @@ def extract_for_type(raw_text: Optional[str], doc_type: str) -> List[Dict[str, O
             "field_value_raw": raw,
         })
 
-    # 币种是全文推断而非单点抽取（见 registry.infer_currency 的保守规则）
+    # 币种先按全文明确标注推断；未标明时按项目约定默认人民币。
     cur = next((r for r in results if r["field_key"] == "currency"), None)
     if cur is not None:
-        cur["field_value"] = registry.infer_currency(raw_text or "")
+        codes = registry.explicit_currency_codes(raw_text or "")
+        if not codes:
+            cur["field_value"] = "CNY"
+        elif len(codes) == 1:
+            cur["field_value"] = next(iter(codes))
+        else:
+            cur["field_value"] = None  # 明确出现多币种，不能用默认值遮盖冲突
         cur["field_value_raw"] = None
     return results
 
