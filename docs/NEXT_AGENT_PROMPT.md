@@ -1,5 +1,7 @@
 # 给下一位开发 AI 的完整提示词
 
+> 历史阶段任务书：它禁止迁移、云端调用和开 Funnel，**已不适用于 2026-10-10 的单目录长任务**。当前请使用 [NEXT_AGENT_ONE_SHOT_PROMPT.md](NEXT_AGENT_ONE_SHOT_PROMPT.md) 与 [AI_ONE_SHOT_CLOSEOUT.md](AI_ONE_SHOT_CLOSEOUT.md)。以下内容仅留作旧阶段记录。
+
 复制下方整段作为**一次任务**发送。它要求你自主完成范围内的核实、最小修复和集中验收；除非遇到真正需要用户授权或选择的阻碍，不要为每一步反复提问。
 
 ---

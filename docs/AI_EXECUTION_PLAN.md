@@ -1,5 +1,7 @@
 # 下一位 AI 的一次性执行方案
 
+> 历史“只读审计与精修”阶段方案；本轮已扩展为迁移、云端合成测试和公网交付。当前唯一执行书为 [AI_ONE_SHOT_CLOSEOUT.md](AI_ONE_SHOT_CLOSEOUT.md)。本文中相反的旧限制不再适用，保留作阶段记录。
+
 本方案服务于**收尾精修**，不是重做项目。主线目录为 `C:\Users\27715\Desktop\doc-ocr-system-github`；旧目录 `C:\Users\27715\Desktop\doc-ocr-system` 只读对照。先读 [审计底稿](AI_PROJECT_AUDIT.md) 和 [验收单](AI_ACCEPTANCE.md)，再处理任务。尽量自主完成一个完整阶段后集中验证，只有超出边界或需要主人决定的事才提问。
 
 ## 不可跨越的边界
