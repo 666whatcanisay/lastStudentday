@@ -8,6 +8,8 @@
 
 ## 阅读顺序
 
+如果目的是准备简历和面试，先看 [通俗技术学习指南](PROJECT_LEARNING_GUIDE_CN.md)；手机阅读可打开 [独立 HTML 版](PROJECT_LEARNING_GUIDE_CN.html)，再按下面顺序查细节。
+
 1. 用浏览器打开同目录 `PROJECT_GUIDE.html`：先看整个系统，不需要安装任何文档阅读器。
 2. [30 分钟快速上手](QUICK_START_CN.md)：按真实页面走一遍。
 3. [技术与工作流](TECHNICAL_WALKTHROUGH.md)：把每一步对应到代码。

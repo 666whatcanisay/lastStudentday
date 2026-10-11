@@ -1,10 +1,9 @@
 @echo off
 rem ============================================================
-rem  doc-ocr-system 一键启动（双击运行）
+rem  doc-ocr-system launcher (double-click)
 rem
-rem  真正的逻辑在同目录的 start_all.ps1。
-rem  这个 .bat 刻意只用 ASCII —— batch 文件里的中文受代码页影响，
-rem  很容易变成乱码；把中文放在 .ps1（UTF-8 BOM）里更可靠。
+rem  Keep this batch file ASCII-only: cmd.exe may use a legacy code page.
+rem  The actual launcher and Chinese messages live in start_all.ps1.
 rem ============================================================
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start_all.ps1"
 echo.

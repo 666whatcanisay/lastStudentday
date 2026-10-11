@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN" xml:lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>智能文档工作台项目学习指南</title>
+  <style>
+
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+</style>
+  <style type="text/css">:root { color-scheme: light; }
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+max-width: 920px;
+margin: 0 auto;
+padding: 24px 24px 80px;
+color: #1d343b;
+background: #f4f8f7;
+font: 17px/1.75 -apple-system, BlinkMacSystemFont, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+overflow-wrap: anywhere;
+}
+body > header, main, nav#TOC { background: #fff; }
+h1, h2, h3 { color: #153f48; line-height: 1.35; scroll-margin-top: 20px; }
+h1 { font-size: clamp(1.65rem, 4.3vw, 2.35rem); margin: 0 0 20px; }
+h2 { font-size: 1.5rem; margin: 38px 0 14px; padding-top: 8px; border-top: 1px solid #dce8e6; }
+h3 { font-size: 1.18rem; margin: 26px 0 10px; }
+p, li { margin: 0 0 11px; }
+ul, ol { padding-left: 1.45em; }
+li > ul, li > ol { margin-top: 8px; }
+a { color: #176d79; text-underline-offset: 3px; }
+a:hover { color: #0f5260; }
+strong { color: #173e47; }
+blockquote {
+margin: 18px 0;
+padding: 14px 18px;
+border-left: 4px solid #2b7e85;
+border-radius: 0 9px 9px 0;
+background: #eaf3f1;
+}
+blockquote p:last-child { margin-bottom: 0; }
+nav#TOC {
+border: 1px solid #d7e7e3;
+border-radius: 12px;
+padding: 18px 22px;
+margin: 18px 0 30px;
+}
+nav#TOC::before { content: "目录 · 点击跳转"; display: block; font-weight: 700; color: #153f48; margin-bottom: 8px; }
+nav#TOC ul { margin: 0; }
+nav#TOC li { margin: 2px 0; }
+nav#TOC > ul > li { list-style: none; }
+nav#TOC > ul > li > a { display: none; }
+nav#TOC > ul > li > ul { padding-left: 1.15em; }
+table {
+display: block;
+width: 100%;
+overflow-x: auto;
+-webkit-overflow-scrolling: touch;
+border-collapse: collapse;
+margin: 18px 0 25px;
+background: #fff;
+border: 1px solid #dbe7e5;
+border-radius: 8px;
+}
+thead { background: #eaf3f1; }
+th, td { padding: 10px 12px; border: 1px solid #dbe7e5; vertical-align: top; min-width: 110px; }
+th { text-align: left; color: #153f48; }
+tr:nth-child(even) td { background: #f8fbfa; }
+code { background: #edf3f2; padding: 2px 4px; border-radius: 4px; font: .88em/1.5 Consolas, "SFMono-Regular", monospace; }
+pre { overflow-x: auto; max-width: 100%; padding: 14px; border-radius: 8px; background: #edf3f2; }
+pre code { padding: 0; background: transparent; }
+
+pre.mermaid { display: none; }
+hr { border: 0; border-top: 1px solid #dce8e6; margin: 30px 0; }
+@media (max-width: 680px) {
+body { padding: 17px 15px 60px; font-size: 16px; line-height: 1.72; }
+h2 { font-size: 1.31rem; }
+h3 { font-size: 1.12rem; }
+nav#TOC { padding: 14px 16px; }
+table.mobile-cards { display: block; border: 0; background: transparent; overflow: visible; font-size: 15px; }
+table.mobile-cards thead { display: none; }
+table.mobile-cards tbody, table.mobile-cards tr { display: block; }
+table.mobile-cards tr { margin: 0 0 12px; border: 1px solid #dbe7e5; border-radius: 9px; overflow: hidden; background: #fff; }
+table.mobile-cards td {
+display: block;
+width: 100%;
+min-width: 0;
+padding: 8px 12px;
+border: 0;
+border-bottom: 1px solid #e7efed;
+background: #fff;
+}
+table.mobile-cards td:last-child { border-bottom: 0; }
+table.mobile-cards td::before {
+content: attr(data-label);
+display: block;
+margin-bottom: 2px;
+color: #47777c;
+font-size: 12px;
+font-weight: 700;
+}
+blockquote { padding: 12px 14px; }
+}
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">智能文档工作台项目学习指南</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#智能文档工作台从零看懂项目与面试讲解" id="toc-智能文档工作台从零看懂项目与面试讲解">智能文档工作台：从零看懂项目与面试讲解</a>
+<ul>
+<li><a href="#1-先记住一句话" id="toc-1-先记住一句话">1.
+先记住一句话</a></li>
+<li><a href="#2-一份文档从头到尾经历什么" id="toc-2-一份文档从头到尾经历什么">2. 一份文档从头到尾经历什么</a></li>
+<li><a href="#3-文件数据库和有效版本分别存什么" id="toc-3-文件数据库和有效版本分别存什么">3.
+文件、数据库和“有效版本”分别存什么</a></li>
+<li><a href="#4-技术栈选它们是为了解决什么" id="toc-4-技术栈选它们是为了解决什么">4.
+技术栈：选它们是为了解决什么</a></li>
+<li><a href="#5-统计导出问答各自怎样用同一份资料" id="toc-5-统计导出问答各自怎样用同一份资料">5.
+统计、导出、问答各自怎样用同一份资料</a></li>
+<li><a href="#6-关键配置哪些要记哪些只需会查" id="toc-6-关键配置哪些要记哪些只需会查">6.
+关键配置：哪些要记，哪些只需会查</a></li>
+<li><a href="#7-启动访问和恢复避免演示时说错" id="toc-7-启动访问和恢复避免演示时说错">7.
+启动、访问和恢复：避免演示时说错</a></li>
+<li><a href="#8-值得讲的亮点以及正确的讲法" id="toc-8-值得讲的亮点以及正确的讲法">8.
+值得讲的亮点，以及正确的讲法</a></li>
+<li><a href="#9-面试时怎么讲" id="toc-9-面试时怎么讲">9.
+面试时怎么讲</a></li>
+<li><a href="#10-常见追问用大白话回答" id="toc-10-常见追问用大白话回答">10. 常见追问：用大白话回答</a></li>
+<li><a href="#11-按这个顺序重新上手别先死啃源码" id="toc-11-按这个顺序重新上手别先死啃源码">11.
+按这个顺序重新上手，别先死啃源码</a></li>
+</ul></li>
+</ul>
+</nav>
+<h1 id="智能文档工作台从零看懂项目与面试讲解">智能文档工作台：从零看懂项目与面试讲解</h1>
+<blockquote>
+<p>适用对象：曾参与项目、现在需要重新熟悉它并向面试官介绍的人。本文按当前本地源码梳理，不把历史验收数字当作今天的运行结果，也不包含真实口令、密钥或业务文档内容。第一次阅读先看第
+1～3 节，再按需要查技术细节。</p>
+</blockquote>
+<p>手机阅读：把同目录的 <code>PROJECT_LEARNING_GUIDE_CN.html</code>
+<strong>这一个文件</strong>发送到手机，保存后用手机浏览器打开即可。它内嵌样式与目录，不依赖项目服务或网络。</p>
+<h2 id="1-先记住一句话">1. 先记住一句话</h2>
+<p>这是一个<strong>把图片和 PDF
+整理成可核对资料的单机工作台</strong>：上传原件 → 本地 OCR 读字 →
+提取字段 → 人工校对 → 发布有效版本 → 统计、导出和带引用的问答。</p>
+<p>它解决的不是“OCR
+读出几个字”这个孤立问题，而是读完之后<strong>怎么确认、怎么保存、怎么复用、怎么追溯</strong>。</p>
+<p>可以这样记各部分的角色：</p>
+<table>
+<thead>
+<tr>
+<th>部分</th>
+<th>大白话</th>
+<th>代码/技术</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Vue 页面</td>
+<td>操作台，负责让人上传、查看、校对</td>
+<td><code>frontend/src/App.vue</code>，Vue 3、Element Plus、ECharts</td>
+</tr>
+<tr>
+<td>FastAPI</td>
+<td>调度员，接请求、检查权限、调用服务</td>
+<td><code>app/main.py</code>、<code>app/routers/</code></td>
+</tr>
+<tr>
+<td>RapidOCR</td>
+<td>读字员，识别图片里的文字</td>
+<td><code>app/services/ocr_engine.py</code>，预训练模型＋ONNX
+Runtime</td>
+</tr>
+<tr>
+<td>字段规则</td>
+<td>填表员，从原文找日期、金额、购销方等</td>
+<td><code>field_registry.py</code>、<code>extractor.py</code>、<code>invoice_extract.py</code></td>
+</tr>
+<tr>
+<td>人工校对和版本</td>
+<td>审核、留档，允许改正但不抹掉历史</td>
+<td><code>document.py</code>、<code>revisions.py</code></td>
+</tr>
+<tr>
+<td>SQLite＋原件目录</td>
+<td>账本＋档案袋；两者缺一不可</td>
+<td><code>app/database.py</code>、<code>data/</code>、<code>uploads/</code></td>
+</tr>
+<tr>
+<td>检索问答</td>
+<td>先查资料再回答，并给出出处</td>
+<td><code>rag_indexer.py</code>、<code>rag_pipeline.py</code></td>
+</tr>
+</tbody>
+</table>
+<p>当前页面有<strong>四个业务板块</strong>：文档管理、统计、智能问答、数据管理；另有一个只读的“项目介绍”页签。它不是五套互不相干的系统，核心数据都是<strong>文档的当前有效版本</strong>。</p>
+<h2 id="2-一份文档从头到尾经历什么">2. 一份文档从头到尾经历什么</h2>
+<p>手机阅读时，先把整条线记成：<strong>上传原件 → OCR 读字 → 抽字段 →
+人工校对并留版本 → 统计 / 导出 /
+问答</strong>。下面的图只是把这条线展开。</p>
+<pre class="mermaid"><code>flowchart LR
+  A[上传图片/PDF] --&gt; B[保存原件和文档记录]
+  B --&gt; C[逐页转图、预处理、本地 OCR]
+  C --&gt; D[分类和字段抽取]
+  D --&gt; E[发布有效版本 r1]
+  E --&gt; F[人工对照原件校对，产生 r2/r3…]
+  E --&gt; G[为当前版本建检索索引]
+  F --&gt; G
+  F --&gt; H[统计与图表]
+  F --&gt; I[PDF/Excel 导出]
+  G --&gt; J[检索、引用、可选云端生成]</code></pre>
+<p>用一张<strong>合成发票</strong>举例：</p>
+<ol type="1">
+<li><strong>上传</strong>：浏览器把文件发给
+<code>POST /api/file/upload</code>。后端先看格式、大小，分块写入
+<code>uploads/</code>，计算
+SHA-256。相同内容已有记录时不假装又上传出一份新文档。此时只是“原件已保存”，<strong>还不是“识别成功”</strong>。实现见
+<code>frontend/src/components/UploadQueue.vue</code>、<code>app/routers/file.py::upload_file</code>。</li>
+<li><strong>OCR</strong>：页面再用 <code>doc_id</code> 调
+<code>POST /api/ocr/recognize</code>。PDF 用 PyMuPDF
+逐页渲染成图；图片经过 OpenCV 预处理，再由本机 RapidOCR
+识别。它返回文字和文字框位置。实现见
+<code>app/routers/ocr.py::recognize_document</code>、<code>app/services/recognition.py::run_recognition</code>。</li>
+<li><strong>分类与抽取</strong>：系统根据<strong>正文</strong>判断是发票、合同或其他，不靠文件名猜。发票按标签、位置和金额关系找候选字段。例如“价税合计”是最终金额的强证据，不能把商品明细行随便当总额。没有可靠依据就留空，交给人核对。实现见
+<code>field_registry.py::classify_doc_type</code>、<code>extractor.py::extract_for_type</code>、<code>invoice_extract.py::extract_invoice_fields</code>。</li>
+<li><strong>发布版本</strong>：一次成功识别把 OCR
+原文、可用正文、类型和字段一起发布为
+<code>r1</code>。失败时不产生“假成功”；如果是重新识别失败，旧有效版本仍保留。实现见
+<code>revisions.py::publish_revision</code>。</li>
+<li><strong>人工校对</strong>：用户一边看原件一边改字段或全文。提交时带上自己看到的版本号
+<code>expected_revision</code>；若别人已先保存新版，接口返回
+<strong>409</strong>，要求重新载入，避免覆盖别人的修改。校对产生
+<code>r2</code>、<code>r3</code>，OCR
+原始文本不被人工编辑覆盖。“已校对”表示确认该版本，<strong>不等于每个字段都填满</strong>。实现见
+<code>frontend/src/components/DocumentDetail.vue::saveEdit</code>、<code>app/routers/document.py::patch_document</code>。</li>
+<li><strong>下游使用</strong>：统计、导出和检索读取当前有效版本；后台为新版建立索引，旧版本索引不再作为当前问答证据。删除进回收站后也不参与正常统计和问答。实现见
+<code>analytics.py::load_valid_docs</code>、<code>document_export.py</code>、<code>rag_indexer.py::index_document</code>。</li>
+</ol>
+<p><strong>理解重点</strong>：上传文件、OCR
+原文、人工确认后的内容不是同一件东西。面试时如果能讲清这三层，就已经抓住项目核心。</p>
+<h2 id="3-文件数据库和有效版本分别存什么">3.
+文件、数据库和“有效版本”分别存什么</h2>
+<table>
+<thead>
+<tr>
+<th>地方</th>
+<th>保存什么</th>
+<th>为什么这样做</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>uploads/</code></td>
+<td>图片/PDF 原件</td>
+<td>需要回看、预览、对照和完整恢复；不能只存 OCR 字符串</td>
+</tr>
+<tr>
+<td><code>data/doc_ocr_v2.db</code> 的 <code>document_info</code></td>
+<td>文档基本信息、原件路径、状态、当前版本号</td>
+<td>相当于每份文档的目录卡</td>
+</tr>
+<tr>
+<td><code>document_revision</code></td>
+<td>每次识别/人工修改的类型、原始 OCR、有效全文、字段快照</td>
+<td>相当于不可随意抹掉的历史记录；当前版本由
+<code>current_revision</code> 指向</td>
+</tr>
+<tr>
+<td><code>document_extract</code></td>
+<td>当前使用的一组字段</td>
+<td>方便列表和业务操作读取；历史字段仍在版本快照中</td>
+</tr>
+<tr>
+<td><code>document_chunk</code>、<code>doc_index_state</code></td>
+<td>检索片段、向量和对应的已索引版本</td>
+<td>问答不能拿过期版本冒充当前事实</td>
+</tr>
+<tr>
+<td><code>qa_record</code></td>
+<td>问答记录和检索信息</td>
+<td>供历史查看与问题排查，不是文档真相来源</td>
+</tr>
+</tbody>
+</table>
+<p>数据库由 SQLAlchemy 管理，结构升级走 Alembic；SQLite 开启外键、WAL
+和锁等待。WAL
+允许读写更好地共存，<strong>不意味着它变成高并发分布式数据库</strong>。应用还对同一个数据目录加单实例锁，所以应保持单进程，不要随意加多个
+worker。参见
+<code>app/database.py</code>、<code>app/models.py</code>、<code>app/services/runtime_guard.py</code>。</p>
+<p>人工保存为什么要生成新版本，而不是直接改原记录？因为后面要回答三个问题：<strong>原来
+OCR
+读到了什么、谁校对后的结果被当前使用、某条引用是不是已经过时</strong>。版本机制正是这些能力的共同基础。</p>
+<h2 id="4-技术栈选它们是为了解决什么">4.
+技术栈：选它们是为了解决什么</h2>
+<table>
+<thead>
+<tr>
+<th>层次</th>
+<th>采用技术</th>
+<th>解决的问题及取舍</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>前端</td>
+<td>Vue 3、Vite、Element Plus、ECharts、Axios</td>
+<td>页面组件化、表单/表格交互、统计图表、请求后端；前端只展示统计结果，不自行重算财务总额</td>
+</tr>
+<tr>
+<td>后端</td>
+<td>Python、FastAPI、Pydantic、Uvicorn</td>
+<td>把上传、识别、编辑、统计、导出、问答分成
+API；数据校验和权限判断放后端</td>
+</tr>
+<tr>
+<td>存储</td>
+<td>SQLite、SQLAlchemy、Alembic、文件目录</td>
+<td>单机部署成本低；数据库保存结构化记录和版本，目录保存原件；不适合宣称大规模多租户</td>
+</tr>
+<tr>
+<td>图像/PDF</td>
+<td>OpenCV、Pillow、PyMuPDF</td>
+<td>图像缩放/去噪/纠偏、PDF 逐页渲染、读取有文字层的 PDF 位置信息</td>
+</tr>
+<tr>
+<td>OCR</td>
+<td>RapidOCR、ONNX Runtime；Tesseract 可作备选</td>
+<td>使用<strong>已有预训练模型</strong>在本机 CPU 推理；项目没有自己训练
+OCR，也不能把“ONNX”直接说成“OCR 已做 INT8 量化”</td>
+</tr>
+<tr>
+<td>字段抽取</td>
+<td>本地分类与正则/位置规则、Decimal</td>
+<td>对发票/合同的明确标签和金额做可解释抽取；规则无法覆盖所有版式，模糊项要校对</td>
+</tr>
+<tr>
+<td>检索</td>
+<td>本地 BGE 中文向量模型、BM25、RRF 融合</td>
+<td>关键词找精确编号和术语，向量补语义近似；向量模型使用已发布的 ONNX
+INT8 版本，和 OCR 模型不是一回事</td>
+</tr>
+<tr>
+<td>生成</td>
+<td>可选 OpenAI 兼容接口的云端模型</td>
+<td>有证据且配置可用时组织自然语言回答；未配置/失败时保留本地检索与引用，不把生成说成全离线</td>
+</tr>
+<tr>
+<td>导出/保护</td>
+<td>openpyxl、PyMuPDF、ZIP、SQLite Online Backup API</td>
+<td>Excel、中文 PDF、批量 ZIP、一致性备份和离线恢复</td>
+</tr>
+<tr>
+<td>远程演示</td>
+<td>Tailscale Funnel</td>
+<td>把只监听本机的服务映射到 HTTPS 公网入口；远程浏览器不必安装
+Tailscale，但必须经过项目登录</td>
+</tr>
+</tbody>
+</table>
+<h3 id="轻量化到底体现在哪里">“轻量化”到底体现在哪里？</h3>
+<p>项目能在 CPU
+上跑，并使用已发布的轻量模型。图像预处理会把过大的图片等比缩小，降低送入
+OCR
+的像素量；<strong>降噪和纠偏主要为了提高可读性，反而会增加一些处理时间</strong>，不能笼统说“所有预处理都加速”。向量模型约
+512 维，优先加载 INT8 ONNX 文件；没有本地向量模型时，检索可退到
+BM25。参见
+<code>app/services/preprocess.py</code>、<code>app/services/embedding.py</code>。</p>
+<h2 id="5-统计导出问答各自怎样用同一份资料">5.
+统计、导出、问答各自怎样用同一份资料</h2>
+<h3 id="51-统计先统一口径再画图">5.1 统计：先统一口径，再画图</h3>
+<p><code>GET /api/document/analytics</code> 先读取未删除、有有效版本、非
+Mock 的文档；再按类型、业务日期、日期未知、币种和校对状态过滤。后端
+<code>app/services/analytics.py</code> 用 Decimal
+计算金额；发票取“价税合计”，合同取“合同金额”，其他类不混进这个财务总额；不同币种不直接相加。前端
+ECharts
+负责画图，点图表时再用同一套过滤条件调用明细接口。因此“图上的数”和“点开看到的文档”有可核对的关系。</p>
+<p>特别注意：<strong>业务日期未知就标未知</strong>，不拿上传时间顶替；“未标币种默认
+CNY”是本项目的业务假设，不是票据原件明确写了人民币。</p>
+<h3 id="52-导出锁定快照再生成文件">5.2 导出：锁定快照再生成文件</h3>
+<p>导出接口在请求开始取当前有效版本快照，避免生成报告时文档恰好被改，出现“正文来自
+r2、字段来自 r3”的混合报告。Excel 按类型分工作表；单份 PDF
+可生成带字段、全文和可选原件附录的报告；批量 PDF 组成 ZIP。PDF
+报告不等于原件。见
+<code>app/routers/document_export.py</code>、<code>app/services/exporter.py</code>。</p>
+<h3 id="53-问答先找出处后组织语言">5.3 问答：先找出处，后组织语言</h3>
+<p><strong>建索引时</strong>：把当前有效全文切成若干片段，并额外把有值的结构化字段组成“字段摘要”片段；对片段建立关键词和向量索引。字段摘要能帮助“这张发票金额多少”之类的问题命中字段，但它<strong>不是完整原文</strong>，页面可切换看该版本有效全文。见
+<code>rag_indexer.py::build_fields_chunk</code>、<code>frontend/src/components/SourceDrawer.vue</code>。</p>
+<p><strong>提问时</strong>：本地规则可处理口语和上下文 → BM25 找字面匹配
+→ 本地向量模型找语义近似 → 融合、去重、过滤旧版本 →
+有证据且云端配置可用时才把相关片段送去生成答案 →
+显示引用。无命中不应硬答；云端不可用则展示检索证据。见
+<code>rag_pipeline.py::retrieve/ask</code>。</p>
+<p>这个设计叫
+RAG（检索增强生成）。面试中不要说“把整个数据库交给大模型”；更准确是“先在本地检索，<strong>可选</strong>把少量相关片段发给模型”。主动使用云端问答时，片段可能离开本机，要遵守数据使用要求。</p>
+<h2 id="6-关键配置哪些要记哪些只需会查">6.
+关键配置：哪些要记，哪些只需会查</h2>
+<p>配置来源主要是 <code>app/config.py</code>、本机 <code>.env</code> 和
+<code>.env.example</code>。**不要在简历、演示材料或仓库里写真实口令/API
+Key。**本表列的是代码默认值或变量用途，不代表此刻实际 <code>.env</code>
+的内容。</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>当前代码默认/作用</th>
+<th>面试中怎样理解</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DOC_OCR_DATA_DIR</code></td>
+<td>未设置时用项目根目录；其下有
+<code>data/</code>、<code>uploads/</code></td>
+<td>代码和数据可以分开；不能把值填成 <code>.db</code> 文件</td>
+</tr>
+<tr>
+<td><code>OCR_ENGINE</code></td>
+<td>默认 <code>rapidocr</code></td>
+<td>真实识别引擎；不能把 Mock 成功当成真实 OCR 验收</td>
+</tr>
+<tr>
+<td>上传限制</td>
+<td><code>.jpg/.jpeg/.png/.bmp/.pdf</code>；单文件 50 MB；1 MB 分块</td>
+<td>控制内存与磁盘风险，哈希用于内容去重</td>
+</tr>
+<tr>
+<td><code>CHUNK_SIZE</code> / <code>CHUNK_OVERLAP</code></td>
+<td>400 / 50 字符</td>
+<td>切块方便检索，重叠防止答案正好被切断</td>
+</tr>
+<tr>
+<td><code>RETRIEVE_TOP_N_VEC/BM25/TOP_K</code></td>
+<td>两路各取 20，融合后默认取 5</td>
+<td>先多找候选，再缩小交给回答层的证据量</td>
+</tr>
+<tr>
+<td><code>FUSION_MODE</code> / <code>RRF_K</code></td>
+<td><code>rrf</code> / 60；关键词权重 1.5、向量权重 1.0</td>
+<td>当前票据语料更依赖编号、金额等字面证据；参数是语料相关经验值，不是普适最优</td>
+</tr>
+<tr>
+<td><code>EMBED_MODEL_DIR</code> / <code>EMBED_DIM</code></td>
+<td>项目 <code>models/bge-small-zh-v1.5</code> / 512</td>
+<td>本地向量模型，优先 INT8 ONNX；缺失时降级为关键词检索</td>
+</tr>
+<tr>
+<td><code>LLM_BASE_URL</code> / <code>LLM_MODEL</code> /
+<code>LLM_API_KEY</code></td>
+<td>可选云端生成配置</td>
+<td>没有 Key 仍可 OCR、校对、统计、导出和本地检索；Key 只放本机
+<code>.env</code></td>
+</tr>
+<tr>
+<td><code>LLM_USE_ENV_PROXY</code></td>
+<td>默认 <code>false</code></td>
+<td>是否读取系统代理，网络需要时再调整</td>
+</tr>
+<tr>
+<td><code>DOC_OCR_DEMO_MODE</code> /
+<code>DOC_OCR_DEMO_PUBLIC_ORIGIN</code></td>
+<td>开启登录保护并指定准确公网域名</td>
+<td>Funnel 开启前必须确认未登录读数据返回 401；不可用通配域名</td>
+</tr>
+<tr>
+<td>口令哈希</td>
+<td>PBKDF2-SHA256 加盐；会话在进程内，默认有效 8 小时</td>
+<td>明文不写入仓库，服务重启后会话失效；当前单口令登录即完整管理员</td>
+</tr>
+</tbody>
+</table>
+<p>检索阈值（例如向量下限、BM25 覆盖率）也在
+<code>app/config.py</code>，但<strong>不要死背数字</strong>。要懂它们为什么存在：小而同质的票据语料里，语义相似不一定事实正确；仅靠一个相似度阈值容易误判，所以系统结合关键词覆盖率、向量结果和引用核对。换一批文档后应重新评测参数。</p>
+<h3 id="配置到底怎样生效">配置到底怎样生效？</h3>
+<p>项目先看<strong>当前进程环境变量</strong>，再从根目录
+<code>.env</code> 补充尚未设置的变量，最后使用代码默认值。因此测试可设置
+<code>DOC_OCR_SKIP_DOTENV=1</code>
+避免误读正式配置；日常维护也要留意终端里临时设置的变量可能覆盖
+<code>.env</code>。精确加载规则见
+<code>app/local_settings.py::load_local_environment</code>。Python/Node
+依赖版本分别见 <code>requirements.txt</code> 与
+<code>frontend/package-lock.json</code>，不要把其他电脑的
+<code>.venv</code> 或 <code>node_modules</code>
+当成可直接复制的交付物。</p>
+<p>安全地检查“配没配好”，无需打印配置文件：<code>scripts/setup_demo_auth.py --status</code>
+只显示登录模式和是否有哈希；<code>GET /api/health</code> 显示服务及 OCR
+引擎信息；<code>GET /api/rag/config</code>
+显示检索/模型的可用性。<strong>显示“已配置”不等于真实
+OCR、云端生成或异地公网已经完成当次验收</strong>；要分别用隔离样本验证。</p>
+<h2 id="7-启动访问和恢复避免演示时说错">7.
+启动、访问和恢复：避免演示时说错</h2>
+<ul>
+<li>当前活动项目目录：<code>C:\Users\27715\Desktop\doc-ocr-system-github</code>；旧版目录只作历史归档。根目录的
+<code>启动项目.bat</code>
+用自身相对路径调用脚本，<strong>用户已取消登录后自动启动</strong>。服务已运行时再点启动按钮，会因端口占用退出；这不是服务崩溃。</li>
+<li>后端默认只监听 <code>127.0.0.1:8000</code>。前端 Vite 构建输出到
+<code>app/static_vite/</code>，FastAPI 在 <code>/</code>
+提供页面；前端调用相对路径 <code>/api</code>。开发环境由 Vite 把
+<code>/api</code> 代理到本机
+8000。<strong>在线服务运行时直接重建前端会改动正在提供的静态文件，应安排隔离构建或维护窗口。</strong></li>
+<li>Tailscale Funnel
+是反向代理：<code>公网 HTTPS → Funnel → 本机 127.0.0.1:8000</code>。访客使用普通浏览器即可访问；但当前<strong>一个共享口令即管理员</strong>，拿到链接和口令的人能操作全部正常文档，不能识别具体是谁。它适合当前演示/小规模使用，<strong>不是企业级权限体系</strong>。</li>
+<li>正常删除先进回收站。完整备份 ZIP 同时含 SQLite
+一致性副本、原件和哈希清单；ZIP
+<strong>未加密</strong>。恢复只通过本机停服务后的
+<code>scripts/restore_backup.py</code>，没有网页在线恢复接口。只复制单个
+<code>.db</code> 可能漏掉 WAL 中的数据和原件，不是完整备份。</li>
+</ul>
+<p>操作说明见
+<code>docs/LOCAL_DELIVERY.md</code>、<code>docs/TAILSCALE_DEMO.md</code>。是否在线、Funnel
+是否开启、真实
+OCR/云端是否可用，都要<strong>现场检查</strong>，不能拿历史报告代替当前状态。</p>
+<h2 id="8-值得讲的亮点以及正确的讲法">8.
+值得讲的亮点，以及正确的讲法</h2>
+<ol type="1">
+<li><strong>闭环而非单点
+OCR</strong>：从上传到校对、统计、导出、问答都围绕一份有效版本；价值是把“不可靠的识别文本”逐步变成“可用且能追溯的资料”。</li>
+<li><strong>版本一致性</strong>：OCR
+原文和人工确认的有效文本分开；编辑带
+<code>expected_revision</code>，冲突返回
+409；索引也记录版本。这样尽量避免统计、报告和问答各说各话。</li>
+<li><strong>可解释的混合检索</strong>：BM25
+处理编号等精确词，向量补语义近似，融合后给出引用；字段摘要和正文引用分开显示。回答可以沿引用回到具体版本，而不是只看一段“AI
+说的”。</li>
+<li><strong>有原则地保留未知</strong>：日期无依据就留空；币种默认 CNY
+要明确标成业务假设；金额按币种分组。这里体现的是数据质量意识，不是“把每个格子都填满”。</li>
+<li><strong>单机也考虑失败和恢复</strong>：识别失败保留旧有效版本、模型不可用可降级、备份使用一致性数据库副本并校验原件，恢复有预检和回滚。不是高并发系统，但有清晰的失败边界。</li>
+<li><strong>可演示、可交接</strong>：桌面与手机布局、项目介绍技术专题、相对路径启动按钮、隔离数据验证和远程演示入口，降低接手与讲解成本。</li>
+</ol>
+<h3 id="不要夸大的地方">不要夸大的地方</h3>
+<ul>
+<li>不是自研/训练 OCR
+模型，也不是自研大模型；主要是<strong>集成已有模型并完成业务工程化</strong>。</li>
+<li>OCR 准确率不是
+100%；非标准票据仍可能漏抽或误抽。最近只读复核发现发票币种取证和购销方兜底等边界仍值得修正，不要承诺“所有发票自动准确”。</li>
+<li>生成式回答不保证事实正确；必须看引用。云端问答也不是“完全离线”。</li>
+<li>不是多用户、可审计个人身份、企业级高并发系统；当前共享口令无法区分操作人。</li>
+<li>历史文档数量、通过率、耗时不应直接写进简历，除非你重新取得可复核的测量记录。</li>
+</ul>
+<h2 id="9-面试时怎么讲">9. 面试时怎么讲</h2>
+<h3 id="30-秒版">30 秒版</h3>
+<blockquote>
+<p>我参与了一个智能文档工作台。它让用户上传图片和 PDF，在本机完成 OCR
+和字段抽取，再通过人工校对形成可追溯版本。统计、PDF/Excel
+导出和问答都读取当前有效版本；问答先用 BM25
+和向量检索找到证据，再可选让云端模型组织回答并展示引用。项目重点不是训练模型，而是把识别结果做成可核对、可复用、可恢复的业务闭环。</p>
+</blockquote>
+<h3 id="2-分钟版按问题方案难点边界说">2
+分钟版：按“问题—方案—难点—边界”说</h3>
+<blockquote>
+<p><strong>问题</strong>：文档手工录入费时，OCR
+虽能读字，却可能读错，直接拿来统计或问答不可靠。<br />
+<strong>方案</strong>：把原件和结构化记录分开保存；上传后逐页
+OCR、按正文规则抽字段，人工可以对照原件校对。每次修改都发布一个新版本，统计、导出和检索只看当前有效版本。<br />
+<strong>难点</strong>：一是避免识别错了却悄悄覆盖正确结果，所以失败保留旧版本；二是多人改同一份资料会冲突，所以用版本号和
+409
+防覆盖；三是问答容易“说得像真的”，所以先混合检索、过滤旧索引，再显示引用，并允许查看字段摘要与正文。<br />
+<strong>取舍</strong>：项目选 FastAPI＋SQLite＋本地
+OCR，适合单机部署和演示；云端生成可选。它不声称自动理解所有票据，也不是企业级多租户平台。</p>
+</blockquote>
+<h3 id="你本人的贡献要如实说">你本人的贡献要如实说</h3>
+<p>如果你的实际工作是需求梳理、技术方案、统筹其他 AI
+编码、验收和部署，就照实表达为“<strong>主导流程设计、拆解开发任务、制定验收标准并核验关键链路</strong>”。不要把没有亲手实现的算法写成“我独立开发”。面试官追问“你写了哪部分代码”时，应能准确区分<strong>你亲自完成、你指导/审核、团队或
+AI 辅助完成</strong>的内容。准备简历时再按你的真实贡献选词。</p>
+<h2 id="10-常见追问用大白话回答">10. 常见追问：用大白话回答</h2>
+<table>
+<thead>
+<tr>
+<th>面试官问</th>
+<th>建议回答要点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>为什么不直接把整份 PDF 扔给大模型？</td>
+<td>本地
+OCR、规则抽取和版本校对先建立可信资料；问答只发送检索到的相关证据片段。成本、隐私和可核对性更可控。</td>
+</tr>
+<tr>
+<td>为什么 OCR 结果不能直接用于统计？</td>
+<td>OCR
+是“读到了什么”，不是“业务事实已确认”。系统保存原文和有效版本，允许人工核对；未知日期不伪造。</td>
+</tr>
+<tr>
+<td>为什么既要 BM25 又要向量？</td>
+<td>编号、金额、公司名等要字面精确；口语问题可能和原文用词不同，需要语义召回。两者互补，仍需看引用。</td>
+</tr>
+<tr>
+<td>什么是版本冲突 409？</td>
+<td>我打开 r2 编辑时，别人先保存成 r3；我再提交 r2
+的修改就会被拒绝，避免覆盖新内容。</td>
+</tr>
+<tr>
+<td>为什么用 SQLite，不用 MySQL？</td>
+<td>当前目标是单机、单进程、易部署；SQLite
+足够且支持事务。若要多用户高并发和细粒度权限，应重新设计存储与部署。</td>
+</tr>
+<tr>
+<td>断网还能用吗？</td>
+<td>本地
+OCR、校对、统计、导出、本地检索可用；下载依赖/模型和可选云端生成需要网络。</td>
+</tr>
+<tr>
+<td>项目最需要继续改哪里？</td>
+<td>提高非标准发票抽取的保守性和测试覆盖；改善共享管理员口令的可追责性；扩充独立的真实样本评测。不要把现有样本效果宣传为普遍准确率。</td>
+</tr>
+</tbody>
+</table>
+<h2 id="11-按这个顺序重新上手别先死啃源码">11.
+按这个顺序重新上手，别先死啃源码</h2>
+<ol type="1">
+<li><strong>第 1 轮：操作 15 分钟</strong>。用合成样本走“上传 → 识别 →
+看原件与字段 → 校对 → 看版本 → 统计 → 导出 →
+问答看引用”。只记住屏幕上的业务动作。</li>
+<li><strong>第 2 轮：画一张图</strong>。不看本文，自己画出
+<code>浏览器 → FastAPI → OCR/抽取 → SQLite 版本＋原件 → 统计/导出/检索</code>。画不出来就回看第
+2～3 节。</li>
+<li><strong>第 3 轮：读六个入口</strong>。先看
+<code>app/main.py</code>、<code>app/routers/file.py</code>、<code>app/services/recognition.py</code>、<code>app/services/revisions.py</code>、<code>app/services/analytics.py</code>、<code>app/services/rag_pipeline.py</code>；每个只回答“输入、输出、失败怎么办”，暂时不要逐行研究。</li>
+<li><strong>第 4 轮：口头讲两遍</strong>。先讲第 9 节的 30 秒版，再讲 2
+分钟版。然后让别人按第 10
+节提问；答不上来再回代码查，不要靠背术语掩盖不理解。</li>
+</ol>
+<p>继续深入可读
+<code>docs/TECHNICAL_WALKTHROUGH.md</code>（函数与工作流）和网页里的“项目介绍”六个技术专题。本文是<strong>学习路线图</strong>，不是今天服务状态或测试结果的证明。</p>
+<script>
+  // Self-contained mobile view: give each table cell its column label.
+  // No requests, tracking, or dependency on the running project.
+  document.querySelectorAll('table').forEach((table) => {
+    const labels = Array.from(table.querySelectorAll('thead th'), (th) => th.textContent.trim());
+    table.querySelectorAll('tbody tr').forEach((row) => {
+      Array.from(row.children).forEach((cell, index) => {
+        cell.setAttribute('data-label', labels[index] || '内容');
+      });
+    });
+    table.classList.add('mobile-cards');
+  });
+</script>
+</body>
+</html>

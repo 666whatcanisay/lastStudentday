@@ -22,6 +22,55 @@ $RuntimeDir = Join-Path $StateDir 'data\runtime'
 if (-not (Test-Path -LiteralPath (Join-Path $ProjectDir 'app\static_vite\index.html'))) {
     throw '请先在 frontend 目录运行 npm ci 和 npm run build。'
 }
+# Recognize only a PID recorded by this project's data root, with the same
+# creation identity, command line and listening port. A successful health
+# response alone is not proof of ownership.
+$PidFile = Join-Path $RuntimeDir 'server.pid'
+if (Test-Path -LiteralPath $PidFile) {
+    try {
+        $Recorded = Get-Content -LiteralPath $PidFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $RecordedWorkdir = [IO.Path]::GetFullPath([string]$Recorded.workdir).TrimEnd('\')
+        $RecordedDataRoot = [IO.Path]::GetFullPath([string]$Recorded.data_root).TrimEnd('\')
+        $ExpectedWorkdir = [IO.Path]::GetFullPath($ProjectDir).TrimEnd('\')
+        $ExpectedDataRoot = [IO.Path]::GetFullPath($StateDir).TrimEnd('\')
+        $RecordedPid = [int]$Recorded.pid
+        $Live = Get-CimInstance Win32_Process -Filter "ProcessId=$RecordedPid" -ErrorAction Stop
+        $LiveCreated = if ($Live) { $Live.CreationDate.ToUniversalTime().Ticks.ToString() } else { '' }
+        $SameProject = $RecordedWorkdir -ieq $ExpectedWorkdir -and $RecordedDataRoot -ieq $ExpectedDataRoot
+        $SameProcess = $Live -and $RecordedPid -eq [int]$Recorded.identity.pid -and `
+            $LiveCreated -eq [string]$Recorded.identity.created -and `
+            $Live.CommandLine -ceq [string]$Recorded.identity.command
+        $ExpectedPort = "(?i)(?:^|\s)--port\s+$Port(?:\s|$)"
+        $UsesPort = $Live -and $Live.CommandLine -match $ExpectedPort
+    } catch {
+        $SameProject = $false
+        $SameProcess = $false
+        $UsesPort = $false
+    }
+    if ($SameProject -and $SameProcess -and $UsesPort) {
+        for ($Attempt = 0; $Attempt -lt 20; $Attempt++) {
+            $Listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+                Where-Object { $_.LocalAddress -eq '127.0.0.1' } | Select-Object -First 1
+            if ($Listener) {
+                if ($Listener.OwningProcess -ne $RecordedPid) {
+                    throw "端口 $Port 已被其他进程占用，未打开页面，也未停止任何进程。"
+                }
+                try {
+                    $Request = [System.Net.HttpWebRequest]::Create("$ServiceUrl/api/health")
+                    $Request.Proxy = $null
+                    $Request.Timeout = 1500
+                    $Response = $Request.GetResponse()
+                    $Response.Close()
+                    Write-Host "本项目已经在运行：$ServiceUrl（未重复启动）"
+                    if (-not $NoBrowser) { Start-Process $ServiceUrl }
+                    exit 0
+                } catch { }
+            }
+            Start-Sleep -Seconds 1
+        }
+        throw "已找到本项目进程 PID=$RecordedPid，但服务未就绪。请查看 $RuntimeDir\server.stderr.log；不要重复启动。"
+    }
+}
 # Never infer process ownership from a successful health response. A different
 # checkout/data directory may be using the same port. No automatic killing.
 $Connection = New-Object System.Net.Sockets.TcpClient

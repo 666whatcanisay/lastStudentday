@@ -1,0 +1,13 @@
+<script>
+  // Self-contained mobile view: give each table cell its column label.
+  // No requests, tracking, or dependency on the running project.
+  document.querySelectorAll('table').forEach((table) => {
+    const labels = Array.from(table.querySelectorAll('thead th'), (th) => th.textContent.trim());
+    table.querySelectorAll('tbody tr').forEach((row) => {
+      Array.from(row.children).forEach((cell, index) => {
+        cell.setAttribute('data-label', labels[index] || '内容');
+      });
+    });
+    table.classList.add('mobile-cards');
+  });
+</script>
