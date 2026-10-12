@@ -8,6 +8,8 @@
 
 ## 阅读顺序
 
+新电脑从 GitHub 安装或迁移旧资料，先看[新电脑安装与旧数据迁移指南](NEW_COMPUTER_SETUP_CN.md)。
+
 如果目的是准备简历和面试，先看 [通俗技术学习指南](PROJECT_LEARNING_GUIDE_CN.md)；手机阅读可打开 [独立 HTML 版](PROJECT_LEARNING_GUIDE_CN.html)，再按下面顺序查细节。
 
 1. 用浏览器打开同目录 `PROJECT_GUIDE.html`：先看整个系统，不需要安装任何文档阅读器。

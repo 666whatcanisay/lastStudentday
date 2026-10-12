@@ -1,5 +1,7 @@
 # Windows 本机交付与维护
 
+第一次在新电脑部署，请按[新电脑安装与旧数据迁移指南](NEW_COMPUTER_SETUP_CN.md)逐步操作；本文侧重日常维护与恢复。
+
 本版采用单机、单进程 FastAPI + SQLite。不要设置多 worker、不要使用 `--reload`，不要直接向公网暴露端口。公开仓库只提供源码、测试与合成语料，不包含本机数据、模型或密钥；克隆后须按下文完成安装和前端构建。
 
 演讲时若要临时通过 Tailscale Funnel 开放 HTTPS 公网入口，必须先启用演示登录并完成权限验收；具体顺序见 [Tailscale 演示操作卡](TAILSCALE_DEMO.md)。应用本身仍只监听 `127.0.0.1`。
@@ -11,7 +13,7 @@
 1. 双击项目根目录的 `启动项目.bat`。它以自身位置定位 `scripts/start_all.bat`，不依赖固定安装路径；随后检查虚拟环境与前端构建、启动本机服务、等待健康检查后打开浏览器。
 2. 访问 `http://127.0.0.1:8000`。仅支持 `localhost` 或 `127.0.0.1`，不使用远程 IP。
 3. 停止前等待识别、导出、问答等操作结束，再双击 `scripts/stop_all.bat`。Windows 下对身份核验通过的服务 PID 执行进程终止，未完成请求会被中断；下次启动检查 SQLite 与恢复日志。
-4. 端口被占用时脚本退出，不结束未知进程。确认旧服务归属后处理，或在 PowerShell 运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start_all.ps1 -Port 8001`。
+4. 重复启动时，若 PID、创建身份、命令行、数据根和监听端口均核验为本项目，脚本直接打开已有页面。端口属于未知进程时退出，不结束它。确认服务归属后处理；同数据目录没有服务运行时，也可在 PowerShell 运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start_all.ps1 -Port 8001`。
 
 首次启动已有数据会执行数据库迁移，迁移前生成本地备份；请先另存已有 `data/` 和 `uploads/`。克隆的新环境不附带正式数据。
 
@@ -20,12 +22,12 @@
 需要 Python 3.12 或 3.13，以及 Node.js/npm。在项目根目录执行：
 
 ```powershell
-python -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe scripts/install_dependencies.py
 .\.venv\Scripts\python.exe scripts/download_model.py
 cd frontend
-npm ci
-npm run build
+npm.cmd ci
+npm.cmd run build
 cd ..
 .\启动项目.bat
 ```

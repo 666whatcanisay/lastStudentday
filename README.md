@@ -18,6 +18,8 @@
 
 ## Windows 本机安装
 
+**第一次在新电脑安装，先看[新电脑安装与旧数据迁移指南](docs/NEW_COMPUTER_SETUP_CN.md)**：从 GitHub 下载到首次运行的完整步骤、必需/可选配置、旧文档恢复和常见问题都在这里。
+
 需要 Python 3.12 或 3.13、Node.js 18+ 与 npm。以下命令在仓库根目录的 PowerShell 中运行；依赖和模型下载需要网络。
 
 ```powershell
@@ -25,8 +27,8 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe scripts\install_dependencies.py
 .\.venv\Scripts\python.exe scripts\download_model.py
 Push-Location frontend
-npm ci
-npm run build
+npm.cmd ci
+npm.cmd run build
 Pop-Location
 .\启动项目.bat
 ```
