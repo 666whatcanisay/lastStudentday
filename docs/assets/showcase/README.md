@@ -7,6 +7,8 @@
 | `cover.svg` | 项目定位与有效版本示意，原生 SVG |
 | `architecture.svg` | 单机应用的技术层次与模块关系，原生 SVG |
 | `workflow.svg` | 上传、OCR、抽取、发布、校对及下游使用，原生 SVG |
+| `data-model.svg` | 六张业务表与外键关系，原生 SVG |
+| `retrieval-flow.svg` | 索引、双路召回、过滤和引用流程，原生 SVG |
 | `workbench.png` | 文档管理实际界面 |
 | `review.png` | 原件与字段对照、有效版本实际界面 |
 | `analytics.png` | 合成资料的实际统计页面 |

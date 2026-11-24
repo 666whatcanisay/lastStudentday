@@ -18,25 +18,7 @@
 
 ## 2. 模块关系
 
-```mermaid
-flowchart TD
-    UI[Vue 工作台] --> API[FastAPI 路由与校验]
-    API --> OCR[识别编排 recognition]
-    API --> EDIT[编辑与版本检查]
-    API --> USE[统计与导出]
-    API --> QA[检索与问答]
-    OCR --> EXTRACT[预处理 / RapidOCR / 字段抽取]
-    EXTRACT --> REV[事务发布 revisions]
-    EDIT --> REV
-    REV --> DB[(SQLite 当前指针与历史快照)]
-    REV --> INDEX[后台索引 rag_indexer]
-    INDEX --> DB
-    DB --> USE
-    DB --> QA
-    QA -. 主动提问且已配置 .-> CLOUD[可选云端模型]
-    FILES[原件 uploads] --> OCR
-    FILES --> USE
-```
+![系统模块与存储关系](assets/showcase/architecture.svg)
 
 这些是同一应用的模块，不是微服务。FastAPI 同步路由在线程池执行；OCR 引擎单例初始化，同文档识别使用进程内锁。部署仍要求单进程，不能据此推导无限并发。[应用入口](../app/main.py) · [识别服务](../app/services/recognition.py)
 
@@ -63,34 +45,7 @@ flowchart TD
 
 ## 4. 有效版本与数据模型
 
-```mermaid
-erDiagram
-    document_info ||--o{ document_revision : history
-    document_info ||--o{ document_extract : current_fields
-    document_info ||--o{ document_chunk : search_chunks
-    document_info ||--o| doc_index_state : index_state
-    document_info {
-        int id PK
-        string file_path
-        int current_revision
-        int reviewed_revision
-        datetime deleted_at
-        int last_attempt_status
-    }
-    document_revision {
-        int doc_id FK
-        int revision
-        text ocr_raw_text
-        text effective_text
-        text fields_json
-    }
-    qa_record {
-        int id PK
-        text question
-        text answer
-        string hit_chunk_ids
-    }
-```
+![六张业务表与当前版本关系](assets/showcase/data-model.svg)
 
 六张业务表分别保存主目录、历史版本、当前字段、检索分块、索引状态与问答记录；`alembic_version` 是技术表。`document_revision` 的 `(doc_id, revision)` 联合唯一。当前指针是业务版本号，不是快照行 ID，也不是复合外键；历史字段以 `fields_json` 为准。
 
@@ -112,18 +67,7 @@ erDiagram
 
 ## 5. 检索怎样跟随版本
 
-```mermaid
-flowchart LR
-    S[当前有效快照] --> T[正文分块 + 有值字段摘要]
-    T --> I[BGE 向量 + BM25]
-    Q[问题与上下文] --> R[规则改写 / 双路召回]
-    I --> R
-    R --> F[RRF / 去重 / 范围和版本过滤]
-    F --> E[本地证据与引用]
-    F -. 云端可用 .-> L[相关片段生成回答]
-    L --> E
-    E --> V[查看同版本正文或字段摘要]
-```
+![索引、检索、可选生成与引用工作流](assets/showcase/retrieval-flow.svg)
 
 **索引期**：对 `effective_text` 分块并记录页码/偏移；有值字段另组摘要块。BGE-small-zh-v1.5 本地编码为 512 维向量，float32 二进制存入 SQLite；BM25 索引在内存构建。采用的已发布 INT8 向量模型与 OCR 模型是两回事。
 
